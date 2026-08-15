@@ -18,6 +18,7 @@ var _s = _unmask("1c470038745e761e11347b3c1038651c113270200f5f05021d3f6331083f74
 /* 心跳计时器：工具中需配置一个同名的"计时器"类型变量，验证成功后自动定时触发 loop 维持心跳 */
 var _hbTimerVar = "心跳计时器";
 var _hbTimerInterval = "0:60";
+var _hbIntervalMs = 60000;
 
 /* 设备指纹持久化文件：随机盐落盘后固定，保持指纹稳定（Root/模拟器可改硬件字段，此处只抬高门槛） */
 var _deviceSaltFile = "/sdcard/.card_auth/device_salt.dat";
@@ -31,7 +32,6 @@ var deviceFingerprint = "";
 var sessionToken = "";
 var lastHeartbeatTime = 0;
 var serverTimeOffset = 0;
-var lastNetworkTime = 0;
 var sessionSalt = "";
 var saltTime = 0;
 var _deviceSalt = "";
@@ -44,7 +44,6 @@ function setup() {
     sessionToken = "";
     lastHeartbeatTime = 0;
     serverTimeOffset = 0;
-    lastNetworkTime = 0;
     sessionSalt = "";
     saltTime = 0;
     _deviceSalt = _readFile(_deviceSaltFile);
@@ -125,6 +124,9 @@ function _verifyInternal() {
         }
         try {
             auto.toast("卡密有效，有效期: " + _expireText);
+        } catch (e) {}
+        try {
+            auto.setValue("卡密有效期", _expireText);
         } catch (e) {}
         return true;
     } catch (e) {
@@ -218,7 +220,7 @@ function _touchHeartbeatTimer(stop) {
 
 function _maybeSendHeartbeat() {
     if (!isCardValid) return;
-    if (Date.now() - lastHeartbeatTime < 60000) return;
+    if (Date.now() - lastHeartbeatTime < _hbIntervalMs) return;
     _sendHeartbeat();
 }
 
@@ -302,7 +304,6 @@ function _syncTime() {
         if (json.timestamp) {
             var serverTime = json.timestamp * 1000;
             serverTimeOffset = serverTime - Date.now();
-            lastNetworkTime = json.timestamp;
             sessionSalt = json.salt || "";
             saltTime = Date.now();
             console.log('时间同步: 偏移=' + serverTimeOffset + 'ms');
@@ -444,6 +445,18 @@ function _utf8Bytes(message) {
     return out;
 }
 
+/* SHA-256 轮常量（模块级，避免每次调用重复分配） */
+var _SHA256_K = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+];
+
 /* ==================== 纯 JS SHA256 ==================== */
 function _sha256(message, rawBytes) {
     function rotateRight(n, x) {
@@ -453,16 +466,7 @@ function _sha256(message, rawBytes) {
     var h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 0xa54ff53a;
     var h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 0x5be0cd19;
 
-    var k = [
-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
-    ];
+    var k = _SHA256_K;
 
     var msg = rawBytes ? message : _utf8Bytes(message);
 
