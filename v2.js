@@ -8,11 +8,11 @@
  */
 
 /* ==================== 配置区 (务必修改) ==================== */
+var _pluginVersion = "2.8.0";
 var _u = "https://3000-8fae9ec7543c4704.monkeycode-ai.online/api";
 
-/* TOTP 种子：Base32 编码（RFC 4648），此处为混淆存储，运行时由 _unmask 还原
- * 明文种子 = D67B65DNIELFRSWLICGZM47RENTKJTFL，客户端被完全逆向时仍有泄露风险，
- * 建议后续配合整体代码混淆/加固进一步抬高逆向成本 */
+/* TOTP 种子：Base32 编码（RFC 4648），此处为混淆存储，运行时由 _unmask 还原。
+ * 客户端被完全逆向时仍有泄露风险，请勿在注释中保留明文种子 */
 var _s = _unmask("1c470038745e761e11347b3c1038651c113270200f5f05021d3f6331083f741c", "Xq7zBk2P");
 
 /* 心跳计时器：工具中需配置一个同名的"计时器"类型变量，验证成功后自动定时触发 loop 维持心跳 */
@@ -53,6 +53,7 @@ function setup() {
     deviceFingerprint = _genDeviceFingerprint();
     _syncTime();
     console.log('插件初始化完成');
+    console.log('插件版本: ' + _pluginVersion);
     console.log('设备ID: ' + _maskId(deviceId));
     console.log('服务器: ' + _u);
 }
@@ -159,7 +160,7 @@ function _signedCall(path, retried, verbose) {
     var nonce = _genNonce();
     var totp = _genTOTP(timestamp);
     var tokenVal = path === "/heartbeat" ? sessionToken : "";
-    var sign = _genSign(code, deviceFingerprint, timestamp, nonce, tokenVal);
+    var sign = _genSign(code, deviceFingerprint, timestamp, nonce, tokenVal, totp);
     var bodyObj = {
         code: code,
         device_id: deviceId,
@@ -733,9 +734,16 @@ function _intToBytes8(n) {
     return out;
 }
 
-/* ==================== 标准 TOTP（RFC 6238，SHA1 + 动态截断 + 6 位数字） ==================== */
+/* ==================== 标准 TOTP（RFC 6238，SHA1 + 动态截断 + 6 位数字，种子字节缓存） ==================== */
+var _secretCache = "";
+var _secretBytesCache = "";
+
 function _totp(secretBase32, serverTime) {
-    var secretBytes = _base32Decode(secretBase32);
+    if (_secretCache !== secretBase32 || !_secretBytesCache) {
+        _secretCache = secretBase32;
+        _secretBytesCache = _base32Decode(secretBase32);
+    }
+    var secretBytes = _secretBytesCache;
     var counter = Math.floor(serverTime / 30);
     var msg = _intToBytes8(counter);
     var hmac = _hmacSha1Bytes(msg, secretBytes);
@@ -748,10 +756,16 @@ function _totp(secretBase32, serverTime) {
     return ("00000" + code).substr(-6);
 }
 
-/* ==================== 响应签名计算与验证 ==================== */
+/* ==================== 响应签名计算与验证（响应密钥按卡密缓存） ==================== */
+var _respKeyCacheCode = "";
+var _respKeyCache = "";
+
 function _computeExpectedSign(base64Data, code) {
-    var responseKey = _hexToBytes(_hmacSha256(code + _s, "response_salt_v2"));
-    return _hmacSha256(base64Data, responseKey);
+    if (_respKeyCacheCode !== code || !_respKeyCache) {
+        _respKeyCache = _hexToBytes(_hmacSha256(code + _s, "response_salt_v2"));
+        _respKeyCacheCode = code;
+    }
+    return _hmacSha256(base64Data, _respKeyCache);
 }
 
 function _verifyResponse(base64Data, sign, keyHint) {
@@ -763,8 +777,8 @@ function _genTOTP(serverTime) {
     return _totp(_s, serverTime);
 }
 
-function _genSign(code, fingerprint, timestamp, nonce, token) {
-    var totp = _genTOTP(timestamp);
+function _genSign(code, fingerprint, timestamp, nonce, token, totp) {
+    if (!totp) totp = _genTOTP(timestamp);
     var params = [
         "client_info=AutoJS-2.0.0",
         "code=" + code,
