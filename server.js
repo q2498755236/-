@@ -5,10 +5,11 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
-const SECRET = process.env.SECRET || '44RcV9Eih7mR44DyDJ4yFWG8IMFEDr9z';
+const SECRET = process.env.SECRET || 'D67B65DNIELFRSWLICGZM47RENTKJTFL';
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'admin123456';
 const DATA_FILE = path.join(__dirname, 'cards.json');
+const ADMIN_HTML = path.join(__dirname, 'admin.html');
 const TIME_WINDOW = 300;
 const MAX_DEVICES_DEFAULT = 1;
 
@@ -47,6 +48,18 @@ function nowSec() {
     return Math.floor(Date.now() / 1000);
 }
 
+function maskCard(code) {
+    const s = String(code || '');
+    if (s.length <= 4) return '****';
+    return s.substring(0, 4) + '***' + s.slice(-2);
+}
+
+function maskId(id) {
+    const s = String(id || '');
+    if (s.length <= 8) return '****';
+    return s.substring(0, 8) + '***';
+}
+
 /* ==================== 会话盐（动态密钥） ==================== */
 const saltStore = new Map();
 const SALT_TTL = 600000;
@@ -74,8 +87,34 @@ function checkSalt(salt) {
     return true;
 }
 
+/* ==================== RFC 6238 TOTP（SHA1 + 动态截断 + Base32 密钥） ==================== */
+function base32Decode(input) {
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+    const cleaned = String(input).toUpperCase().replace(/[=\s-]/g, '');
+    const buf = [];
+    let bits = 0;
+    let value = 0;
+    for (const ch of cleaned) {
+        const idx = alphabet.indexOf(ch);
+        if (idx < 0) continue;
+        value = (value << 5) | idx;
+        bits += 5;
+        if (bits >= 8) {
+            bits -= 8;
+            buf.push((value >> bits) & 0xff);
+        }
+    }
+    return Buffer.from(buf);
+}
+
 function genTotp(counter) {
-    return crypto.createHmac('sha256', SECRET).update(String(counter)).digest('hex').substring(0, 16);
+    const key = base32Decode(SECRET);
+    const msg = Buffer.alloc(8);
+    msg.writeBigUInt64BE(BigInt(counter));
+    const hmac = crypto.createHmac('sha1', key).update(msg).digest();
+    const offset = hmac[hmac.length - 1] & 0x0f;
+    const bin = ((hmac[offset] & 0x7f) << 24) | (hmac[offset + 1] << 16) | (hmac[offset + 2] << 8) | hmac[offset + 3];
+    return String(bin % 1000000).padStart(6, '0');
 }
 
 function verifyRequestSign(body) {
@@ -138,7 +177,7 @@ function respondSigned(res, code, payload) {
     respond(res, signResponse(code, payload));
 }
 
-function checkCard(code, deviceId) {
+function checkCard(code, deviceId, fingerprint) {
     const cards = loadCards();
     const card = cards[code];
     if (!card) return { ok: false, reason: '卡密不存在' };
@@ -150,12 +189,31 @@ function checkCard(code, deviceId) {
         return { ok: false, reason: '卡密已过期' };
     }
     const bound = card.devices || [];
+    if (!card.fingerprints) card.fingerprints = {};
+    const fps = card.fingerprints;
     if (bound.indexOf(deviceId) === -1) {
+        // 指纹兜底：deviceId 漂移时，若指纹与已绑定设备一致，视为同一设备换绑，不新增设备数
+        let matched = null;
+        for (const id of bound) {
+            if (fps[id] && fps[id] === fingerprint) { matched = id; break; }
+        }
+        if (matched !== null) {
+            const idx = bound.indexOf(matched);
+            bound[idx] = deviceId;
+            delete fps[matched];
+            fps[deviceId] = fingerprint;
+            card.devices = bound;
+            card.fingerprints = fps;
+            saveCards(cards);
+            return { ok: true, reason: '验证成功' };
+        }
         if (bound.length >= (card.maxDevices || MAX_DEVICES_DEFAULT)) {
             return { ok: false, reason: '设备数已达上限' };
         }
         bound.push(deviceId);
+        fps[deviceId] = fingerprint;
         card.devices = bound;
+        card.fingerprints = fps;
         saveCards(cards);
     }
     return { ok: true, reason: '验证成功' };
@@ -165,12 +223,12 @@ function handleVerify(req, res, body, isHeartbeat) {
     const tag = isHeartbeat ? 'heartbeat' : 'verify';
     if (!body || typeof body.code !== 'string' || typeof body.device_id !== 'string' ||
         typeof body.device_fingerprint !== 'string' || typeof body.nonce !== 'string') {
-        console.log('[' + tag + '] 参数不完整 raw=' + JSON.stringify(body).slice(0, 200));
+        console.log('[' + tag + '] 参数不完整 keys=' + Object.keys(body || {}).join(','));
         return respondSigned(res, (body && body.code) || '', { success: false, message: '请求参数不完整' });
     }
     const signOk = verifyRequestSign(body);
-    console.log('[' + tag + '] code=' + body.code + ' device=' + body.device_id +
-        ' nonce=' + body.nonce + ' ts=' + body.timestamp + ' sign=' + (signOk ? 'OK' : 'FAIL') +
+    console.log('[' + tag + '] code=' + maskCard(body.code) + ' device=' + maskId(body.device_id) +
+        ' nonce=' + (body.nonce ? 'set' : 'none') + ' ts=' + body.timestamp + ' sign=' + (signOk ? 'OK' : 'FAIL') +
         ' tsDiff=' + Math.abs(nowSec() - Number(body.timestamp || 0)) + 's');
     if (!signOk) {
         return respondSigned(res, body.code, { success: false, message: '请求签名校验失败' });
@@ -178,7 +236,7 @@ function handleVerify(req, res, body, isHeartbeat) {
     if (!checkNonce(body)) {
         return respondSigned(res, body.code, { success: false, message: '请求已过期或重复提交' });
     }
-    const result = checkCard(body.code, body.device_id);
+    const result = checkCard(body.code, body.device_id, body.device_fingerprint);
     if (!result.ok) {
         return respondSigned(res, body.code, { success: false, message: result.reason });
     }
@@ -228,6 +286,14 @@ const server = http.createServer((req, res) => {
             'Access-Control-Allow-Headers': 'Content-Type, Authorization'
         });
         return res.end();
+    }
+
+    if (req.method === 'GET' && (url === '/' || url === '/admin')) {
+        return fs.readFile(ADMIN_HTML, 'utf8', (err, html) => {
+            if (err) return respond(res, { success: false, message: 'admin.html 缺失' });
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+            return res.end(html);
+        });
     }
 
     if (req.method === 'GET' && url === '/api/time') {
@@ -344,7 +410,7 @@ if (require.main === module) {
             console.log('  POST /api/admin/issue  - 生成卡密 {count, days, max_devices}');
             console.log('  GET  /api/admin/list   - 卡密列表');
             console.log('  POST /api/admin/card   - {code, action: lock|unlock|freeze|unfreeze|delete}');
-            console.log('管理接口需请求头: Authorization: Bearer ' + ADMIN_TOKEN);
+            console.log('管理接口需请求头: Authorization: Bearer <ADMIN_TOKEN>');
         });
     }
 }

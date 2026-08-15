@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>卡密验证系统 - 管理面板</title>
+<style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+        font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+        background: #f0f2f5; color: #1f2329; padding: 24px;
+    }
+    .wrap { max-width: 1080px; margin: 0 auto; }
+    h1 { font-size: 22px; margin-bottom: 4px; }
+    .sub { color: #8a919f; font-size: 13px; margin-bottom: 20px; }
+    .card {
+        background: #fff; border-radius: 10px; padding: 20px; margin-bottom: 20px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+    .card h2 { font-size: 16px; margin-bottom: 14px; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+    .field { display: flex; flex-direction: column; gap: 6px; }
+    .field label { font-size: 13px; color: #5f6672; }
+    input, select {
+        height: 34px; padding: 0 10px; border: 1px solid #dcdfe6; border-radius: 6px;
+        font-size: 14px; outline: none; background: #fff; color: #1f2329;
+    }
+    input:focus { border-color: #3370ff; }
+    input[type=text], input[type=password] { width: 300px; }
+    input[type=number] { width: 120px; }
+    button {
+        height: 34px; padding: 0 16px; border: none; border-radius: 6px; font-size: 14px;
+        cursor: pointer; background: #3370ff; color: #fff; transition: opacity .15s;
+    }
+    button:hover { opacity: 0.88; }
+    button.ghost { background: #fff; color: #3370ff; border: 1px solid #3370ff; }
+    button.danger { background: #f53f3f; }
+    button.sm { height: 28px; padding: 0 10px; font-size: 13px; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 10px 8px; text-align: left; border-bottom: 1px solid #f0f0f0; white-space: nowrap; }
+    th { color: #8a919f; font-weight: 500; background: #fafbfc; }
+    tr:hover td { background: #f7f9ff; }
+    .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+    .tag.active { background: #e8f7ee; color: #00b42a; }
+    .tag.locked { background: #fff1f0; color: #f53f3f; }
+    .tag.frozen { background: #fff7e8; color: #ff7d00; }
+    .tag.expired { background: #f2f3f5; color: #8a919f; }
+    .msg { padding: 10px 14px; border-radius: 6px; margin-bottom: 14px; font-size: 13px; display: none; }
+    .msg.ok { display: block; background: #e8f7ee; color: #00b42a; }
+    .msg.err { display: block; background: #fff1f0; color: #f53f3f; }
+    .actions { display: flex; gap: 6px; }
+    .muted { color: #8a919f; font-size: 12px; }
+    .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; gap: 12px; flex-wrap: wrap; }
+    .empty { text-align: center; color: #8a919f; padding: 30px 0; }
+    pre.out { background: #1f2329; color: #b8e986; padding: 10px; border-radius: 6px; font-size: 12px; overflow-x: auto; margin-top: 12px; white-space: pre-wrap; word-break: break-all; }
+</style>
+</head>
+<body>
+<div class="wrap">
+    <h1>卡密验证系统 · 管理面板</h1>
+    <div class="sub">生成卡密 / 查看状态 / 锁定冻结管理（数据实时落盘 cards.json）</div>
+
+    <div class="card">
+        <div class="row">
+            <div class="field">
+                <label>管理 Token</label>
+                <input type="password" id="adminToken" placeholder="Bearer Token">
+            </div>
+            <button class="ghost" onclick="saveToken()">保存</button>
+            <div class="muted" style="align-self:center">默认 admin123456，仅测试用途</div>
+        </div>
+    </div>
+
+    <div id="msg"></div>
+
+    <div class="card">
+        <h2>生成卡密</h2>
+        <div class="row">
+            <div class="field">
+                <label>数量 (1-1000)</label>
+                <input type="number" id="issueCount" value="1" min="1" max="1000">
+            </div>
+            <div class="field">
+                <label>有效期(天, 0=永久)</label>
+                <input type="number" id="issueDays" value="0" min="0">
+            </div>
+            <div class="field">
+                <label>最大设备数</label>
+                <input type="number" id="issueMaxDev" value="1" min="1">
+            </div>
+            <button onclick="doIssue()">生成卡密</button>
+        </div>
+        <div id="issueOut"></div>
+    </div>
+
+    <div class="card">
+        <div class="toolbar">
+            <h2>卡密列表</h2>
+            <div>
+                <button class="ghost" onclick="loadList()">刷新</button>
+            </div>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>卡密</th>
+                        <th>状态</th>
+                        <th>有效期至</th>
+                        <th>最大设备</th>
+                        <th>已绑设备</th>
+                        <th>创建时间</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="listBody"></tbody>
+            </table>
+            <div class="empty" id="emptyTip" style="display:none">暂无卡密，先在上方生成</div>
+        </div>
+    </div>
+</div>
+
+<script>
+var token = localStorage.getItem('adminToken') || 'admin123456';
+document.getElementById('adminToken').value = token;
+
+function saveToken() {
+    token = document.getElementById('adminToken').value.trim() || 'admin123456';
+    localStorage.setItem('adminToken', token);
+    showMsg('Token 已保存', true);
+}
+
+function showMsg(text, ok) {
+    var el = document.getElementById('msg');
+    el.className = ok ? 'msg ok' : 'msg err';
+    el.textContent = text;
+    setTimeout(function () { el.className = 'msg'; }, 4000);
+}
+
+function api(method, path, body) {
+    var opts = {
+        method: method,
+        headers: { 'Authorization': 'Bearer ' + token }
+    };
+    if (body) {
+        opts.headers['Content-Type'] = 'application/json';
+        opts.body = JSON.stringify(body);
+    }
+    return fetch(path, opts).then(function (r) { return r.json(); });
+}
+
+function fmtTime(ts) {
+    if (!ts) return '永久';
+    var d = new Date(ts * 1000);
+    var p = function (n) { return (n < 10 ? '0' : '') + n; };
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+function fmtDevices(devs) {
+    if (!devs || !devs.length) return '-';
+    return devs.join(', ');
+}
+
+function loadList() {
+    api('GET', '/api/admin/list').then(function (json) {
+        if (!json.success) { showMsg(json.message || '加载失败'); return; }
+        var body = document.getElementById('listBody');
+        var list = json.cards || [];
+        body.innerHTML = '';
+        document.getElementById('emptyTip').style.display = list.length ? 'none' : 'block';
+        list.forEach(function (c) {
+            var tr = document.createElement('tr');
+            var statusTag = '<span class="tag ' + c.status + '">' + c.status + '</span>';
+            tr.innerHTML =
+                '<td><code>' + c.code + '</code></td>' +
+                '<td>' + statusTag + '</td>' +
+                '<td>' + fmtTime(c.expireAt) + '</td>' +
+                '<td>' + c.maxDevices + '</td>' +
+                '<td title="' + fmtDevices(c.devices) + '">' + (c.devices || []).length + ' / ' + c.maxDevices + '</td>' +
+                '<td>' + fmtTime(c.createdAt) + '</td>' +
+                '<td><div class="actions">' +
+                '<button class="sm" onclick="doAction(\'' + c.code + '\',\'lock\')">锁定</button>' +
+                '<button class="sm" onclick="doAction(\'' + c.code + '\',\'unlock\')">解锁</button>' +
+                '<button class="sm" onclick="doAction(\'' + c.code + '\',\'freeze\')">冻结</button>' +
+                '<button class="sm" onclick="doAction(\'' + c.code + '\',\'unfreeze\')">解冻</button>' +
+                '<button class="sm danger" onclick="doAction(\'' + c.code + '\',\'delete\')">删除</button>' +
+                '</div></td>';
+            body.appendChild(tr);
+        });
+    }).catch(function (e) { showMsg('请求失败: ' + e.message); });
+}
+
+function doIssue() {
+    var count = parseInt(document.getElementById('issueCount').value, 10) || 1;
+    var days = parseInt(document.getElementById('issueDays').value, 10) || 0;
+    var maxDev = parseInt(document.getElementById('issueMaxDev').value, 10) || 1;
+    api('POST', '/api/admin/issue', { count: count, days: days, max_devices: maxDev }).then(function (json) {
+        if (!json.success) { showMsg(json.message || '生成失败'); return; }
+        showMsg('成功生成 ' + json.codes.length + ' 张卡密', true);
+        document.getElementById('issueOut').innerHTML = '<pre class="out">' + json.codes.join('\n') + '</pre>';
+        loadList();
+    }).catch(function (e) { showMsg('请求失败: ' + e.message); });
+}
+
+function doAction(code, action) {
+    if (action === 'delete' && !confirm('确认删除卡密 ' + code + '？此操作不可恢复。')) return;
+    api('POST', '/api/admin/card', { code: code, action: action }).then(function (json) {
+        if (!json.success) { showMsg(json.message || '操作失败'); return; }
+        showMsg('操作成功: ' + code + ' -> ' + action, true);
+        loadList();
+    }).catch(function (e) { showMsg('请求失败: ' + e.message); });
+}
+
+loadList();
+</script>
+</body>
+</html>

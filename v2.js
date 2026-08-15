@@ -1,15 +1,26 @@
 /* ==================== 卡密验证客户端 V2（自动化编辑器版） ====================
+ * 签名方案 B：TOTP + 服务端盐双重绑定
+ *   - TOTP 采用标准 RFC 6238（SHA1 + 动态截断 + Base32 密钥，兼容 Google Authenticator）
+ *   - 请求签名 HMAC-SHA256(key = TOTP + 会话盐 + 种子)
+ *   - 响应签名 HMAC-SHA256 校验，防伪造
  * 依赖 API：http.get / http.postJson / http.addHeader / auto.getValue / auto.setValue
  *           / auto.getClip / auto.toast / device.brand / device.model / device.product
  */
 
 /* ==================== 配置区 (务必修改) ==================== */
-var _u = "https://3000-c334b93d6d869650.monkeycode-ai.online/api";
-var _s = "44RcV9Eih7mR44DyDJ4yFWG8IMFEDr9z";
+var _u = "https://3000-8fae9ec7543c4704.monkeycode-ai.online/api";
+
+/* TOTP 种子：Base32 编码（RFC 4648），此处为混淆存储，运行时由 _unmask 还原
+ * 明文种子 = D67B65DNIELFRSWLICGZM47RENTKJTFL，客户端被完全逆向时仍有泄露风险，
+ * 建议后续配合整体代码混淆/加固进一步抬高逆向成本 */
+var _s = _unmask("1c470038745e761e11347b3c1038651c113270200f5f05021d3f6331083f741c", "Xq7zBk2P");
 
 /* 心跳计时器：工具中需配置一个同名的"计时器"类型变量，验证成功后自动定时触发 loop 维持心跳 */
 var _hbTimerVar = "心跳计时器";
 var _hbTimerInterval = "0:60";
+
+/* 设备指纹持久化文件：随机盐落盘后固定，保持指纹稳定（Root/模拟器可改硬件字段，此处只抬高门槛） */
+var _deviceSaltFile = "/sdcard/.card_auth/device_salt.dat";
 
 /* ==================== 全局变量（setup 中重置） ==================== */
 var isCardValid = false;
@@ -23,6 +34,7 @@ var serverTimeOffset = 0;
 var lastNetworkTime = 0;
 var sessionSalt = "";
 var saltTime = 0;
+var _deviceSalt = "";
 
 /* ==================== 初始化（工具加载时执行一次） ==================== */
 function setup() {
@@ -35,11 +47,12 @@ function setup() {
     lastNetworkTime = 0;
     sessionSalt = "";
     saltTime = 0;
+    _deviceSalt = _readFile(_deviceSaltFile);
     deviceId = _genDeviceId();
     deviceFingerprint = _genDeviceFingerprint();
     _syncTime();
     console.log('插件初始化完成');
-    console.log('设备ID: ' + deviceId);
+    console.log('设备ID: ' + _maskId(deviceId));
     console.log('服务器: ' + _u);
 }
 
@@ -85,6 +98,11 @@ function _verify() {
 
 function _verifyInternal(retried) {
     try {
+        if (!_isSecureEndpoint()) {
+            console.log('验证失败：服务端地址必须使用 HTTPS');
+            _updateState(false, "服务端地址必须使用 HTTPS");
+            return false;
+        }
         lastVerifyTime = Date.now();
         var code = _getCardCode();
         if (!code) {
@@ -92,7 +110,7 @@ function _verifyInternal(retried) {
             _updateState(false, "未获取到卡密");
             return false;
         }
-        console.log('待验证卡密: ' + code);
+        console.log('待验证卡密: ' + _maskCode(code));
         _ensureSalt();
         var timestamp = _getServerTime();
         var nonce = _genNonce();
@@ -109,18 +127,16 @@ function _verifyInternal(retried) {
             timestamp: timestamp,
             sign: sign
         };
-        console.log('请求验证卡密: code=' + code + ' ts=' + timestamp + ' nonce=' + nonce);
+        console.log('请求验证卡密: code=' + _maskCode(code) + ' ts=' + timestamp + ' totp=****** nonce=****');
         var text = _httpPost("/verify", bodyObj);
         var json = JSON.parse(text);
         if (!json || typeof json.data !== "string" || typeof json.sign !== "string") {
-            console.log('服务器响应格式异常: ' + String(text).substring(0, 120));
+            console.log('服务器响应格式异常: 响应长度=' + String(text).length);
             _updateState(false, "服务器响应格式异常");
             return false;
         }
         if (!_verifyResponse(json.data, json.sign, code)) {
             console.log('验证失败：响应签名校验失败');
-            console.log('  期望sign: ' + _computeExpectedSign(json.data, code));
-            console.log('  收到sign: ' + json.sign);
             _updateState(false, "响应签名校验失败");
             return false;
         }
@@ -165,6 +181,11 @@ function _maybeSendHeartbeat() {
 function _sendHeartbeat() {
     if (!isCardValid) return;
     try {
+        if (!_isSecureEndpoint()) {
+            console.log('心跳失败：服务端地址必须使用 HTTPS');
+            _updateState(false, "服务端地址必须使用 HTTPS");
+            return;
+        }
         var code = _getCardCode();
         if (!code) return;
         _ensureSalt();
@@ -229,6 +250,10 @@ function _updateState(valid, message) {
 }
 
 /* ==================== HTTP 封装 ==================== */
+function _isSecureEndpoint() {
+    return String(_u).indexOf("https://") === 0;
+}
+
 function _httpPost(path, obj) {
     try {
         http.addHeader("Content-Type", "application/json");
@@ -260,7 +285,7 @@ function _syncTime() {
             lastNetworkTime = json.timestamp;
             sessionSalt = json.salt || "";
             saltTime = Date.now();
-            console.log('时间同步: 偏移=' + serverTimeOffset + 'ms salt=' + sessionSalt.substring(0, 8) + '...');
+            console.log('时间同步: 偏移=' + serverTimeOffset + 'ms');
         }
     } catch (e) {
         serverTimeOffset = 0;
@@ -280,10 +305,39 @@ function _getServerTime() {
     return Math.floor((Date.now() + serverTimeOffset) / 1000);
 }
 
+/* ==================== 敏感字段脱敏（日志输出） ==================== */
+function _maskCode(code) {
+    code = String(code || "");
+    if (code.length <= 4) return "****";
+    return code.substring(0, 4) + "***" + code.substring(code.length - 2);
+}
+
+function _maskId(id) {
+    id = String(id || "");
+    if (id.length <= 8) return "****";
+    return id.substring(0, 8) + "***";
+}
+
 /* ==================== 设备指纹 ==================== */
+function _readFile(path) {
+    try {
+        if (File.exist(path)) return String(File.read(path) || "").trim();
+    } catch (e) {}
+    return "";
+}
+
+function _writeFile(path, content) {
+    try {
+        var idx = path.lastIndexOf("/");
+        var dir = idx > 0 ? path.substring(0, idx) : "";
+        if (dir && !File.exist(dir)) File.mkdir(dir);
+        File.write(path, content);
+    } catch (e) {}
+}
+
 function _genDeviceId() {
-    var info = (device.brand || "") + "_" + (device.model || "") + "_" + (device.product || "");
-    info = String(info).replace(/\s+/g, "").replace(/[^a-zA-Z0-9_]/g, "");
+    var info = String(device.brand || "") + "_" + String(device.model || "") + "_" + String(device.product || "");
+    info = info.replace(/\s+/g, "").replace(/[^a-zA-Z0-9_]/g, "");
     if (info.length < 4) {
         info = "unknown_" + Math.floor(Math.random() * 1000000);
     }
@@ -291,11 +345,21 @@ function _genDeviceId() {
 }
 
 function _genDeviceFingerprint() {
-    var raw = (device.brand || "") + "|" + (device.model || "") + "|" + (device.product || "");
-    if (String(raw).replace(/\|/g, "").length < 2) {
-        raw = raw + "|" + Math.floor(Math.random() * 1000000);
+    if (!_deviceSalt || _deviceSalt.length < 8) {
+        var chars = "abcdef0123456789";
+        var s = "";
+        for (var i = 0; i < 16; i++) {
+            s += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
+        _deviceSalt = s;
+        _writeFile(_deviceSaltFile, s);
     }
-    return _sha256(raw + "|" + _s);
+    var raw = (device.brand || "") + "|" + (device.model || "") + "|" + (device.product || "") +
+              "|" + (device.width || "") + "|" + (device.height || "") + "|" + (device.dpi || "");
+    if (String(raw).replace(/\|/g, "").length < 2) {
+        raw = raw + "|" + _deviceSalt;
+    }
+    return _sha256(raw + "|" + _deviceSalt + "|" + _s);
 }
 
 /* ==================== 卡密获取 ==================== */
@@ -328,6 +392,16 @@ function _getCardCode() {
         }
     }
     return myCard;
+}
+
+/* ==================== 种子混淆还原（XOR + Hex，防源码直接提取） ==================== */
+function _unmask(hex, key) {
+    var out = "";
+    for (var i = 0; i < hex.length; i += 2) {
+        var c = parseInt(hex.substr(i, 2), 16);
+        out += String.fromCharCode(c ^ key.charCodeAt((i / 2) % key.length));
+    }
+    return out;
 }
 
 /* ==================== UTF-8 字节编码 ==================== */
@@ -429,6 +503,70 @@ function _sha256(message, rawBytes) {
     return toHex(h0) + toHex(h1) + toHex(h2) + toHex(h3) + toHex(h4) + toHex(h5) + toHex(h6) + toHex(h7);
 }
 
+/* ==================== 纯 JS SHA1（RFC 3174，输入为原始字节字符串） ==================== */
+function _sha1Raw(msg) {
+    var h0 = 0x67452301;
+    var h1 = 0xEFCDAB89;
+    var h2 = 0x98BADCFE;
+    var h3 = 0x10325476;
+    var h4 = 0xC3D2E1F0;
+
+    var ml = msg.length * 8;
+    var padded = msg + String.fromCharCode(0x80);
+    while (padded.length % 64 !== 56) {
+        padded += String.fromCharCode(0);
+    }
+    var hi = Math.floor(ml / 0x100000000);
+    var lo = ml >>> 0;
+    padded += String.fromCharCode(
+        (hi >>> 24) & 0xff, (hi >>> 16) & 0xff, (hi >>> 8) & 0xff, hi & 0xff,
+        (lo >>> 24) & 0xff, (lo >>> 16) & 0xff, (lo >>> 8) & 0xff, lo & 0xff
+    );
+
+    var w = new Array(80);
+    for (var blockStart = 0; blockStart < padded.length; blockStart += 64) {
+        var i;
+        for (i = 0; i < 16; i++) {
+            var j = blockStart + i * 4;
+            w[i] = ((padded.charCodeAt(j) & 0xff) << 24) |
+                   ((padded.charCodeAt(j + 1) & 0xff) << 16) |
+                   ((padded.charCodeAt(j + 2) & 0xff) << 8) |
+                   (padded.charCodeAt(j + 3) & 0xff);
+        }
+        for (i = 16; i < 80; i++) {
+            var n = w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16];
+            w[i] = (n << 1) | (n >>> 31);
+        }
+
+        var a = h0, b = h1, c = h2, d = h3, e = h4;
+        for (i = 0; i < 80; i++) {
+            var f, k;
+            if (i < 20) { f = (b & c) | (~b & d); k = 0x5A827999; }
+            else if (i < 40) { f = b ^ c ^ d; k = 0x6ED9EBA1; }
+            else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8F1BBCDC; }
+            else { f = b ^ c ^ d; k = 0xCA62C1D6; }
+            var temp = ((a << 5) | (a >>> 27)) + f + e + k + w[i];
+            e = d; d = c; c = (b << 30) | (b >>> 2); b = a; a = temp;
+        }
+
+        h0 = (h0 + a) | 0;
+        h1 = (h1 + b) | 0;
+        h2 = (h2 + c) | 0;
+        h3 = (h3 + d) | 0;
+        h4 = (h4 + e) | 0;
+    }
+
+    function toHex(n) {
+        var s = "";
+        for (var i = 7; i >= 0; i--) {
+            s += ((n >>> (i * 4)) & 0xf).toString(16);
+        }
+        return s;
+    }
+
+    return toHex(h0) + toHex(h1) + toHex(h2) + toHex(h3) + toHex(h4);
+}
+
 /* ==================== Hex 转原始字节字符串 ==================== */
 function _hexToBytes(hex) {
     var out = "";
@@ -467,6 +605,25 @@ function _hmacSha256(message, key) {
         iKeyPad += String.fromCharCode(keyBytes[i] ^ 0x36);
     }
     return _sha256(oKeyPad + _hexToBytes(_sha256(iKeyPad + _utf8Bytes(message), true)), true);
+}
+
+/* ==================== 纯 JS HMAC-SHA1（RFC 2104，输入均为原始字节字符串） ==================== */
+function _hmacSha1Bytes(messageBytes, keyBytes) {
+    var blockSize = 64;
+    var k = keyBytes;
+    if (k.length > blockSize) {
+        k = _hexToBytes(_sha1Raw(k));
+    }
+    while (k.length < blockSize) {
+        k += String.fromCharCode(0);
+    }
+    var oPad = "", iPad = "";
+    for (var i = 0; i < blockSize; i++) {
+        var kb = k.charCodeAt(i) & 0xff;
+        oPad += String.fromCharCode(kb ^ 0x5c);
+        iPad += String.fromCharCode(kb ^ 0x36);
+    }
+    return _hexToBytes(_sha1Raw(oPad + _hexToBytes(_sha1Raw(iPad + messageBytes))));
 }
 
 /* ==================== Base64 解码 ==================== */
@@ -513,6 +670,50 @@ function _utf8Decode(str) {
     return out;
 }
 
+/* ==================== Base32 解码（RFC 4648，忽略空格/-，大小写不敏感） ==================== */
+function _base32Decode(input) {
+    var alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    var cleaned = String(input).toUpperCase().replace(/[=\s-]/g, "");
+    var bits = 0;
+    var value = 0;
+    var out = "";
+    for (var i = 0; i < cleaned.length; i++) {
+        var idx = alphabet.indexOf(cleaned.charAt(i));
+        if (idx < 0) continue;
+        value = (value << 5) | idx;
+        bits += 5;
+        if (bits >= 8) {
+            bits -= 8;
+            out += String.fromCharCode((value >> bits) & 0xff);
+        }
+    }
+    return out;
+}
+
+/* ==================== 64 位无符号整数 → 8 字节大端序 ==================== */
+function _intToBytes8(n) {
+    var out = "";
+    for (var i = 7; i >= 0; i--) {
+        out += String.fromCharCode(Math.floor(n / Math.pow(256, i)) & 0xff);
+    }
+    return out;
+}
+
+/* ==================== 标准 TOTP（RFC 6238，SHA1 + 动态截断 + 6 位数字） ==================== */
+function _totp(secretBase32, serverTime) {
+    var secretBytes = _base32Decode(secretBase32);
+    var counter = Math.floor(serverTime / 30);
+    var msg = _intToBytes8(counter);
+    var hmac = _hmacSha1Bytes(msg, secretBytes);
+    var offset = hmac.charCodeAt(hmac.length - 1) & 0x0f;
+    var bin = ((hmac.charCodeAt(offset) & 0x7f) << 24) |
+              (hmac.charCodeAt(offset + 1) << 16) |
+              (hmac.charCodeAt(offset + 2) << 8) |
+              (hmac.charCodeAt(offset + 3));
+    var code = bin % 1000000;
+    return ("00000" + code).substr(-6);
+}
+
 /* ==================== 响应签名计算与验证 ==================== */
 function _computeExpectedSign(base64Data, code) {
     var responseKey = _hexToBytes(_hmacSha256(code + _s, "response_salt_v2"));
@@ -523,10 +724,9 @@ function _verifyResponse(base64Data, sign, keyHint) {
     return sign === _computeExpectedSign(base64Data, keyHint);
 }
 
-/* ==================== 请求签名生成（TOTP + 会话盐双重绑定） ==================== */
+/* ==================== 请求签名生成（方案 B：TOTP + 服务端盐双重绑定） ==================== */
 function _genTOTP(serverTime) {
-    var counter = Math.floor(serverTime / 30);
-    return _hmacSha256(String(counter), _s).substring(0, 16);
+    return _totp(_s, serverTime);
 }
 
 function _genSign(code, fingerprint, timestamp, nonce) {
