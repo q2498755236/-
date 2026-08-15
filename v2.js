@@ -125,9 +125,6 @@ function _verifyInternal() {
         try {
             auto.toast("卡密有效，有效期: " + _expireText);
         } catch (e) {}
-        try {
-            auto.setValue("卡密有效期", _expireText);
-        } catch (e) {}
         return true;
     } catch (e) {
         console.log('验证异常: ' + e.message);
