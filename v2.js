@@ -110,6 +110,13 @@ function _verifyInternal() {
         lastHeartbeatTime = Date.now();
         _touchHeartbeatTimer();
         console.log('验证成功：卡密有效，会话已建立');
+        var _expireAt = result.expireAt || 0;
+        if (_expireAt > 0) {
+            var _days = Math.ceil((_expireAt * 1000 - Date.now()) / 86400000);
+            console.log('卡密剩余有效期: ' + (_days > 0 ? _days + ' 天' : '已到期'));
+        } else {
+            console.log('卡密有效期: 永久');
+        }
         return true;
     } catch (e) {
         console.log('验证异常: ' + e.message);
@@ -133,7 +140,8 @@ function _signedCall(path, retried, verbose) {
     var timestamp = _getServerTime();
     var nonce = _genNonce();
     var totp = _genTOTP(timestamp);
-    var sign = _genSign(code, deviceFingerprint, timestamp, nonce);
+    var tokenVal = path === "/heartbeat" ? sessionToken : "";
+    var sign = _genSign(code, deviceFingerprint, timestamp, nonce, tokenVal);
     var bodyObj = {
         code: code,
         device_id: deviceId,
@@ -143,6 +151,7 @@ function _signedCall(path, retried, verbose) {
         salt: sessionSalt,
         totp: totp,
         timestamp: timestamp,
+        token: tokenVal,
         sign: sign
     };
     if (verbose) console.log('请求验证卡密: code=' + _maskCode(code) + ' ts=' + timestamp + ' totp=****** nonce=****');
@@ -175,9 +184,9 @@ function _signedCall(path, retried, verbose) {
             _syncTime();
             return _signedCall(path, true, verbose);
         }
-        return { success: false, message: msg };
+        return { success: false, message: msg, retryable: (msg.indexOf("会话已失效") > -1) };
     }
-    return { success: true, message: payload.message || "", token: payload.token || "" };
+    return { success: true, message: payload.message || "", token: payload.token || "", expireAt: payload.expireAt || 0 };
 }
 
 function _parseJsonSafe(text) {
@@ -209,6 +218,11 @@ function _sendHeartbeat() {
     try {
         var result = _signedCall("/heartbeat", false, false);
         if (!result.success) {
+            if (result.retryable) {
+                console.log('会话已失效，自动重新验证');
+                _verify();
+                return;
+            }
             _updateState(false, result.message);
             return;
         }
@@ -726,7 +740,7 @@ function _genTOTP(serverTime) {
     return _totp(_s, serverTime);
 }
 
-function _genSign(code, fingerprint, timestamp, nonce) {
+function _genSign(code, fingerprint, timestamp, nonce, token) {
     var totp = _genTOTP(timestamp);
     var params = [
         "client_info=AutoJS-2.0.0",
@@ -736,7 +750,8 @@ function _genSign(code, fingerprint, timestamp, nonce) {
         "nonce=" + nonce,
         "salt=" + sessionSalt,
         "totp=" + totp,
-        "timestamp=" + timestamp
+        "timestamp=" + timestamp,
+        "token=" + (token || "")
     ].join("&");
     return _hmacSha256(params, totp + sessionSalt + _s);
 }
