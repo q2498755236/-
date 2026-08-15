@@ -111,12 +111,21 @@ function _verifyInternal() {
         _touchHeartbeatTimer();
         console.log('验证成功：卡密有效，会话已建立');
         var _expireAt = result.expireAt || 0;
+        var _expireText = "";
         if (_expireAt > 0) {
             var _days = Math.ceil((_expireAt * 1000 - Date.now()) / 86400000);
-            console.log('卡密剩余有效期: ' + (_days > 0 ? _days + ' 天' : '已到期'));
+            _expireText = _days > 0 ? (_days + ' 天') : '已到期';
         } else {
-            console.log('卡密有效期: 永久');
+            _expireText = '永久';
         }
+        console.log('卡密有效期: ' + _expireText);
+        if (_expireAt > 0 && _days > 0 && _days <= 3) {
+            console.log('警告：卡密即将到期，请及时续费');
+            _expireText = _expireText + '，即将到期，请及时续费';
+        }
+        try {
+            auto.toast("卡密有效，有效期: " + _expireText);
+        } catch (e) {}
         return true;
     } catch (e) {
         console.log('验证异常: ' + e.message);
