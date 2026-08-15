@@ -87,6 +87,33 @@ function checkSalt(salt) {
     return true;
 }
 
+/* ==================== 会话 token（心跳绑定，verify 签发 / heartbeat 校验） ==================== */
+const tokenStore = new Map();
+const TOKEN_TTL = 7200000;
+
+function issueToken(key) {
+    const token = crypto.randomBytes(24).toString('hex');
+    tokenStore.set(key, { token, expire: Date.now() + TOKEN_TTL });
+    if (tokenStore.size > 20000) {
+        const now = Date.now();
+        for (const [k, v] of tokenStore) {
+            if (v.expire < now) tokenStore.delete(k);
+        }
+    }
+    return token;
+}
+
+function checkToken(key, token) {
+    if (!token || typeof token !== 'string') return false;
+    const rec = tokenStore.get(key);
+    if (!rec) return false;
+    if (rec.expire < Date.now()) {
+        tokenStore.delete(key);
+        return false;
+    }
+    return rec.token === token;
+}
+
 /* ==================== RFC 6238 TOTP（SHA1 + 动态截断 + Base32 密钥） ==================== */
 function base32Decode(input) {
     const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
@@ -131,7 +158,8 @@ function verifyRequestSign(body) {
             'nonce=' + body.nonce,
             'salt=' + body.salt,
             'totp=' + totp,
-            'timestamp=' + body.timestamp
+            'timestamp=' + body.timestamp,
+            'token=' + (body.token || '')
         ].join('&');
         const key = totp + body.salt + SECRET;
         const expect = crypto.createHmac('sha256', key).update(str).digest('hex');
@@ -205,7 +233,7 @@ function checkCard(code, deviceId, fingerprint) {
             card.devices = bound;
             card.fingerprints = fps;
             saveCards(cards);
-            return { ok: true, reason: '验证成功' };
+            return { ok: true, reason: '验证成功', expireAt: card.expireAt || 0 };
         }
         if (bound.length >= (card.maxDevices || MAX_DEVICES_DEFAULT)) {
             return { ok: false, reason: '设备数已达上限' };
@@ -216,7 +244,7 @@ function checkCard(code, deviceId, fingerprint) {
         card.fingerprints = fps;
         saveCards(cards);
     }
-    return { ok: true, reason: '验证成功' };
+    return { ok: true, reason: '验证成功', expireAt: card.expireAt || 0 };
 }
 
 function handleVerify(req, res, body, isHeartbeat) {
@@ -240,11 +268,19 @@ function handleVerify(req, res, body, isHeartbeat) {
     if (!result.ok) {
         return respondSigned(res, body.code, { success: false, message: result.reason });
     }
-    const token = crypto.randomBytes(24).toString('hex');
+    const tokKey = body.code + '|' + body.device_id;
+    if (isHeartbeat) {
+        if (!checkToken(tokKey, body.token)) {
+            console.log('[' + tag + '] 会话 token 校验失败，要求重新验证');
+            return respondSigned(res, body.code, { success: false, message: '会话已失效' });
+        }
+    }
+    const token = isHeartbeat ? body.token : issueToken(tokKey);
     return respondSigned(res, body.code, {
         success: true,
         message: isHeartbeat ? '心跳正常' : result.reason,
-        token: token
+        token: token,
+        expireAt: result.expireAt || 0
     });
 }
 
