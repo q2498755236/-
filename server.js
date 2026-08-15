@@ -304,6 +304,31 @@ function adminAuth(req) {
     return (req.headers.authorization || '') === 'Bearer ' + ADMIN_TOKEN;
 }
 
+/* ==================== 简单速率限制（防滥用，按 IP 内存计数） ==================== */
+const rateMap = new Map();
+const RATE_LIMIT = { time: 5, api: 10, admin: 10 };
+
+function clientIp(req) {
+    return String((req.socket && req.socket.remoteAddress) || 'unknown').replace(/^::ffff:/, '');
+}
+
+function rateLimit(ip, limit) {
+    const now = Date.now();
+    let rec = rateMap.get(ip);
+    if (!rec || now - rec.start >= 1000) {
+        rec = { start: now, count: 0 };
+        rateMap.set(ip, rec);
+    }
+    rec.count++;
+    if (rec.count > limit) return false;
+    if (rateMap.size > 20000) {
+        for (const [k, v] of rateMap) {
+            if (now - v.start > 60000) rateMap.delete(k);
+        }
+    }
+    return true;
+}
+
 let queue = Promise.resolve();
 
 function enqueue(fn) {
@@ -314,6 +339,7 @@ function enqueue(fn) {
 
 const server = http.createServer((req, res) => {
     const url = req.url.split('?')[0];
+    const ip = clientIp(req);
 
     if (req.method === 'OPTIONS') {
         res.writeHead(204, {
@@ -325,6 +351,9 @@ const server = http.createServer((req, res) => {
     }
 
     if (req.method === 'GET' && (url === '/' || url === '/admin')) {
+        if (!rateLimit(ip, RATE_LIMIT.admin)) {
+            return respond(res, { success: false, message: '请求过于频繁' });
+        }
         return fs.readFile(ADMIN_HTML, 'utf8', (err, html) => {
             if (err) return respond(res, { success: false, message: 'admin.html 缺失' });
             res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -333,10 +362,16 @@ const server = http.createServer((req, res) => {
     }
 
     if (req.method === 'GET' && url === '/api/time') {
+        if (!rateLimit(ip, RATE_LIMIT.time)) {
+            return respond(res, { success: false, message: '请求过于频繁' });
+        }
         return respond(res, { timestamp: nowSec(), salt: issueSalt() });
     }
 
     if (req.method === 'POST' && (url === '/api/verify' || url === '/api/heartbeat')) {
+        if (!rateLimit(ip, RATE_LIMIT.api)) {
+            return respond(res, { success: false, message: '请求过于频繁' });
+        }
         const isHeartbeat = url === '/api/heartbeat';
         return readBody(req, (body) => {
             enqueue(() => handleVerify(req, res, body, isHeartbeat));
@@ -344,6 +379,9 @@ const server = http.createServer((req, res) => {
     }
 
     if (url.indexOf('/api/admin') === 0) {
+        if (!rateLimit(ip, RATE_LIMIT.admin)) {
+            return respond(res, { success: false, message: '请求过于频繁' });
+        }
         if (!adminAuth(req)) {
             return respond(res, { success: false, message: '未授权' });
         }

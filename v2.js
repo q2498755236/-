@@ -35,6 +35,7 @@ var serverTimeOffset = 0;
 var sessionSalt = "";
 var saltTime = 0;
 var _deviceSalt = "";
+var _retryDelay = 5000;
 
 /* ==================== 初始化（工具加载时执行一次） ==================== */
 function setup() {
@@ -46,6 +47,7 @@ function setup() {
     serverTimeOffset = 0;
     sessionSalt = "";
     saltTime = 0;
+    _retryDelay = 5000;
     _deviceSalt = _readFile(_deviceSaltFile);
     deviceId = _genDeviceId();
     deviceFingerprint = _genDeviceFingerprint();
@@ -61,7 +63,7 @@ function loop(action) {
         _maybeSendHeartbeat();
         switch (action) {
             case "条件类-判断卡密是否有效": {
-                if (!isCardValid && (Date.now() - lastVerifyTime > 5000)) {
+                if (!isCardValid && (Date.now() - lastVerifyTime > _retryDelay)) {
                     _verify();
                 }
                 return isCardValid;
@@ -100,10 +102,12 @@ function _verifyInternal() {
         lastVerifyTime = Date.now();
         var result = _signedCall("/verify", false, true);
         if (!result.success) {
+            _backoff();
             console.log('验证失败: ' + result.message);
             _updateState(false, result.message);
             return false;
         }
+        _retryDelay = 5000;
         sessionToken = result.token;
         _updateState(true, "验证成功");
         lastHeartbeatTime = Date.now();
@@ -127,10 +131,16 @@ function _verifyInternal() {
         } catch (e) {}
         return true;
     } catch (e) {
+        _backoff();
         console.log('验证异常: ' + e.message);
         _updateState(false, "网络异常: " + e.message);
         return false;
     }
+}
+
+/* 验证失败指数退避：5s -> 10s -> 20s -> 30s 封顶，成功后重置 */
+function _backoff() {
+    _retryDelay = Math.min(_retryDelay * 2, 30000);
 }
 
 /* ==================== 签名请求通用流程（验证/心跳共用） ====================
@@ -165,6 +175,9 @@ function _signedCall(path, retried, verbose) {
     if (verbose) console.log('请求验证卡密: code=' + _maskCode(code) + ' ts=' + timestamp + ' totp=****** nonce=****');
     var text = _httpPost(path, bodyObj);
     var json = _parseJsonSafe(text);
+    if (json && json.success === false && typeof json.data !== "string") {
+        return { success: false, message: json.message || '请求失败' };
+    }
     if (!json || typeof json.data !== "string" || typeof json.sign !== "string") {
         var hint = "";
         if (typeof text === 'string' && text.trim().charAt(0) !== '{') {
