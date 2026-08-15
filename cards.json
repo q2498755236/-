@@ -1,0 +1,102 @@
+{
+  "LVYH-AK8C-FGKD-4C5P": {
+    "status": "active",
+    "expireAt": 0,
+    "maxDevices": 1,
+    "devices": [
+      "dev_test123"
+    ],
+    "createdAt": 1786802551
+  },
+  "RDVF-8NFG-U529-SE6S": {
+    "status": "active",
+    "expireAt": 0,
+    "maxDevices": 1,
+    "devices": [
+      "dev_9187359d841c"
+    ],
+    "createdAt": 1786802611
+  },
+  "D4BS-ZQD8-UGBH-RKKJ": {
+    "status": "active",
+    "expireAt": 1787407561,
+    "maxDevices": 2,
+    "devices": [
+      "dev_22c1cb62c72b",
+      "dev_e2e_tok"
+    ],
+    "createdAt": 1786802761,
+    "fingerprints": {
+      "dev_22c1cb62c72b": "0ebf5af505bbee8f4f24afb22b3a36e7fa481da5cd63efdf3654b302c875ee6f",
+      "dev_e2e_tok": "fpE2E"
+    }
+  },
+  "6LKH-HU7X-XW8F-U64X": {
+    "status": "active",
+    "expireAt": 1787407561,
+    "maxDevices": 2,
+    "devices": [
+      "dev_22c1cb62c72b"
+    ],
+    "createdAt": 1786802761,
+    "fingerprints": {
+      "dev_22c1cb62c72b": "b788c715884ae1ed7f5b0bc00a55388cb334eba45dd004eee87b6ffcb730eb3d"
+    }
+  },
+  "NJFW-UQLD-VTFT-V62C": {
+    "status": "active",
+    "expireAt": 0,
+    "maxDevices": 1,
+    "devices": [],
+    "createdAt": 1786802802
+  },
+  "Z4WJ-BMDY-X5WS-5N6F": {
+    "status": "active",
+    "expireAt": 0,
+    "maxDevices": 1,
+    "devices": [
+      "dev_cb13c1d27ede"
+    ],
+    "createdAt": 1786803181
+  },
+  "3S9G-W5CP-3TVE-UEUD": {
+    "status": "active",
+    "expireAt": 0,
+    "maxDevices": 1,
+    "devices": [
+      "dev_b533093e0c72"
+    ],
+    "createdAt": 1786805186
+  },
+  "K8TU-H6HC-F233-EMWW": {
+    "status": "active",
+    "expireAt": 0,
+    "maxDevices": 1,
+    "devices": [
+      "dev_B"
+    ],
+    "createdAt": 1786805366,
+    "fingerprints": {
+      "dev_B": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  },
+  "TJKG-KQ5H-9RLX-D3YJ": {
+    "status": "active",
+    "expireAt": 0,
+    "maxDevices": 1,
+    "devices": [
+      "dev_cb13c1d27ede"
+    ],
+    "createdAt": 1786805728,
+    "fingerprints": {
+      "dev_cb13c1d27ede": "1b5627bb38c451cb09eac5f8c6ee647a8691c4ba919223ae2624e6e6053df666"
+    }
+  },
+  "KLTN-5XYZ-3QFE-HM2S": {
+    "status": "active",
+    "expireAt": 0,
+    "maxDevices": 1,
+    "devices": [],
+    "createdAt": 1786813874
+  }
+}
