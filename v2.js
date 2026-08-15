@@ -93,66 +93,19 @@ function loop(action) {
 
 /* ==================== 主验证流程 ==================== */
 function _verify() {
-    return _verifyInternal(false);
+    return _verifyInternal();
 }
 
-function _verifyInternal(retried) {
+function _verifyInternal() {
     try {
-        if (!_isSecureEndpoint()) {
-            console.log('验证失败：服务端地址必须使用 HTTPS');
-            _updateState(false, "服务端地址必须使用 HTTPS");
-            return false;
-        }
         lastVerifyTime = Date.now();
-        var code = _getCardCode();
-        if (!code) {
-            console.log('验证失败：未获取到卡密');
-            _updateState(false, "未获取到卡密");
+        var result = _signedCall("/verify", false, true);
+        if (!result.success) {
+            console.log('验证失败: ' + result.message);
+            _updateState(false, result.message);
             return false;
         }
-        console.log('待验证卡密: ' + _maskCode(code));
-        _ensureSalt();
-        var timestamp = _getServerTime();
-        var nonce = _genNonce();
-        var totp = _genTOTP(timestamp);
-        var sign = _genSign(code, deviceFingerprint, timestamp, nonce);
-        var bodyObj = {
-            code: code,
-            device_id: deviceId,
-            device_fingerprint: deviceFingerprint,
-            client_info: "AutoJS-2.0.0",
-            nonce: nonce,
-            salt: sessionSalt,
-            totp: totp,
-            timestamp: timestamp,
-            sign: sign
-        };
-        console.log('请求验证卡密: code=' + _maskCode(code) + ' ts=' + timestamp + ' totp=****** nonce=****');
-        var text = _httpPost("/verify", bodyObj);
-        var json = JSON.parse(text);
-        if (!json || typeof json.data !== "string" || typeof json.sign !== "string") {
-            console.log('服务器响应格式异常: 响应长度=' + String(text).length);
-            _updateState(false, "服务器响应格式异常");
-            return false;
-        }
-        if (!_verifyResponse(json.data, json.sign, code)) {
-            console.log('验证失败：响应签名校验失败');
-            _updateState(false, "响应签名校验失败");
-            return false;
-        }
-        var payload = JSON.parse(_utf8Decode(_base64Decode(json.data)));
-        if (payload.success !== true) {
-            var msg = payload.message || "验证失败";
-            if (!retried && (msg.indexOf("签名") > -1 || msg.indexOf("过期") > -1)) {
-                console.log('会话盐可能失效，刷新后重试');
-                _syncTime();
-                return _verifyInternal(true);
-            }
-            console.log('服务器返回失败: ' + msg);
-            _updateState(false, msg);
-            return false;
-        }
-        sessionToken = payload.token || "";
+        sessionToken = result.token;
         _updateState(true, "验证成功");
         lastHeartbeatTime = Date.now();
         _touchHeartbeatTimer();
@@ -162,6 +115,79 @@ function _verifyInternal(retried) {
         console.log('验证异常: ' + e.message);
         _updateState(false, "网络异常: " + e.message);
         return false;
+    }
+}
+
+/* ==================== 签名请求通用流程（验证/心跳共用） ====================
+ * 服务端盐失效（重启或过期）时自动刷新盐并重试一次，实现心跳自愈 */
+function _signedCall(path, retried, verbose) {
+    if (!_isSecureEndpoint()) {
+        return { success: false, message: '服务端地址必须使用 HTTPS' };
+    }
+    var code = _getCardCode(verbose);
+    if (!code) {
+        return { success: false, message: '未获取到卡密' };
+    }
+    if (verbose) console.log('待验证卡密: ' + _maskCode(code));
+    _ensureSalt();
+    var timestamp = _getServerTime();
+    var nonce = _genNonce();
+    var totp = _genTOTP(timestamp);
+    var sign = _genSign(code, deviceFingerprint, timestamp, nonce);
+    var bodyObj = {
+        code: code,
+        device_id: deviceId,
+        device_fingerprint: deviceFingerprint,
+        client_info: "AutoJS-2.0.0",
+        nonce: nonce,
+        salt: sessionSalt,
+        totp: totp,
+        timestamp: timestamp,
+        sign: sign
+    };
+    if (verbose) console.log('请求验证卡密: code=' + _maskCode(code) + ' ts=' + timestamp + ' totp=****** nonce=****');
+    var text = _httpPost(path, bodyObj);
+    var json = _parseJsonSafe(text);
+    if (!json || typeof json.data !== "string" || typeof json.sign !== "string") {
+        var hint = "";
+        if (typeof text === 'string' && text.trim().charAt(0) !== '{') {
+            hint = "（响应非 JSON，请检查服务地址或服务是否启动）";
+        }
+        console.log('服务器响应格式异常: 响应长度=' + String(text).length + hint);
+        return { success: false, message: '服务器响应格式异常' + hint };
+    }
+    if (!_verifyResponse(json.data, json.sign, code)) {
+        if (!retried) {
+            console.log('响应签名校验失败，刷新会话盐后重试');
+            _syncTime();
+            return _signedCall(path, true, verbose);
+        }
+        return { success: false, message: '响应签名校验失败' };
+    }
+    var payload = _parseJsonSafe(_utf8Decode(_base64Decode(json.data)));
+    if (!payload) {
+        return { success: false, message: '服务器数据解析异常' };
+    }
+    if (payload.success !== true) {
+        var msg = payload.message || "验证失败";
+        if (!retried && (msg.indexOf("签名") > -1 || msg.indexOf("过期") > -1)) {
+            console.log('会话盐可能失效，刷新后重试');
+            _syncTime();
+            return _signedCall(path, true, verbose);
+        }
+        return { success: false, message: msg };
+    }
+    return { success: true, message: payload.message || "", token: payload.token || "" };
+}
+
+function _parseJsonSafe(text) {
+    if (typeof text !== 'string') return null;
+    text = text.trim();
+    if (text.charAt(0) !== '{') return null;
+    try {
+        return JSON.parse(text);
+    } catch (e) {
+        return null;
     }
 }
 
@@ -181,41 +207,12 @@ function _maybeSendHeartbeat() {
 function _sendHeartbeat() {
     if (!isCardValid) return;
     try {
-        if (!_isSecureEndpoint()) {
-            console.log('心跳失败：服务端地址必须使用 HTTPS');
-            _updateState(false, "服务端地址必须使用 HTTPS");
+        var result = _signedCall("/heartbeat", false, false);
+        if (!result.success) {
+            _updateState(false, result.message);
             return;
         }
-        var code = _getCardCode();
-        if (!code) return;
-        _ensureSalt();
-        var timestamp = _getServerTime();
-        var nonce = _genNonce();
-        var sign = _genSign(code, deviceFingerprint, timestamp, nonce);
-        var bodyObj = {
-            code: code,
-            device_id: deviceId,
-            device_fingerprint: deviceFingerprint,
-            client_info: "AutoJS-2.0.0",
-            nonce: nonce,
-            salt: sessionSalt,
-            timestamp: timestamp,
-            sign: sign
-        };
-        var text = _httpPost("/heartbeat", bodyObj);
-        var json = JSON.parse(text);
-        if (json && typeof json.data === "string" && typeof json.sign === "string") {
-            if (!_verifyResponse(json.data, json.sign, code)) {
-                _updateState(false, "心跳响应签名校验失败");
-                return;
-            }
-            var payload = JSON.parse(_utf8Decode(_base64Decode(json.data)));
-            if (payload.success !== true) {
-                _updateState(false, payload.message || "会话已失效");
-            } else {
-                lastHeartbeatTime = Date.now();
-            }
-        }
+        lastHeartbeatTime = Date.now();
     } catch (e) {
         console.log('心跳失败: ' + e.message);
     }
@@ -363,12 +360,12 @@ function _genDeviceFingerprint() {
 }
 
 /* ==================== 卡密获取 ==================== */
-function _getCardCode() {
+function _getCardCode(verbose) {
     var myCard = "";
     try {
         myCard = auto.getValue('CARD_CODE') || "";
         myCard = String(myCard).trim();
-        if (myCard) console.log('从变量 CARD_CODE 读取卡密');
+        if (myCard && verbose !== false) console.log('从变量 CARD_CODE 读取卡密');
     } catch (e) {
         myCard = "";
     }
@@ -376,7 +373,7 @@ function _getCardCode() {
         try {
             myCard = auto.getClip() || "";
             myCard = String(myCard).trim();
-            if (myCard) console.log('从剪贴板读取卡密');
+            if (myCard && verbose !== false) console.log('从剪贴板读取卡密');
         } catch (e) {
             myCard = "";
         }
@@ -391,7 +388,7 @@ function _getCardCode() {
             return null;
         }
     }
-    return myCard;
+    return myCard.toUpperCase();
 }
 
 /* ==================== 种子混淆还原（XOR + Hex，防源码直接提取） ==================== */
