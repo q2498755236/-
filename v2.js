@@ -9,7 +9,7 @@
 
 /* ==================== 配置区 (务必修改) ==================== */
 var _pluginVersion = "2.8.0";
-var _u = "https://3000-8fae9ec7543c4704.monkeycode-ai.online/api";
+var _u = "https://3000-c334b93d6d869650.monkeycode-ai.online/api";
 
 /* TOTP 种子：Base32 编码（RFC 4648），此处为混淆存储，运行时由 _unmask 还原。
  * 客户端被完全逆向时仍有泄露风险，请勿在注释中保留明文种子 */
