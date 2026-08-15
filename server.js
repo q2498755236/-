@@ -250,7 +250,8 @@ function checkCard(code, deviceId, fingerprint) {
 function handleVerify(req, res, body, isHeartbeat) {
     const tag = isHeartbeat ? 'heartbeat' : 'verify';
     if (!body || typeof body.code !== 'string' || typeof body.device_id !== 'string' ||
-        typeof body.device_fingerprint !== 'string' || typeof body.nonce !== 'string') {
+        typeof body.device_fingerprint !== 'string' || typeof body.nonce !== 'string' ||
+        (isHeartbeat && typeof body.token !== 'string')) {
         console.log('[' + tag + '] 参数不完整 keys=' + Object.keys(body || {}).join(','));
         return respondSigned(res, (body && body.code) || '', { success: false, message: '请求参数不完整' });
     }

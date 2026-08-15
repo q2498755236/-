@@ -73,10 +73,7 @@ function loop(action) {
                 return (Date.now() - lastVerifyTime) > 1800000;
             }
             case "动作类-执行卡密验证": {
-                var result = _verify();
-                auto.setValue("卡密验证状态", isCardValid ? "验证成功" : "验证失败");
-                auto.setValue("验证结果状态", String(isCardValid));
-                auto.setValue("验证失败原因", isCardValid ? "" : verifyResultMessage);
+                _verify();
                 return "验证操作完成";
             }
             case "动作类-重置验证状态": {
@@ -156,6 +153,9 @@ function _signedCall(path, retried, verbose) {
     }
     if (verbose) console.log('待验证卡密: ' + _maskCode(code));
     _ensureSalt();
+    if (!sessionSalt) {
+        return { success: false, message: '无法连接服务器（时间同步失败）' };
+    }
     var timestamp = _getServerTime();
     var nonce = _genNonce();
     var totp = _genTOTP(timestamp);
@@ -270,7 +270,7 @@ function _resetState() {
     } catch (e) {}
 }
 
-/* ==================== 状态更新 ==================== */
+/* ==================== 状态更新（同步写入编辑器变量，任何路径触发均刷新） ==================== */
 function _updateState(valid, message) {
     isCardValid = valid;
     verifyResultMessage = message || "";
@@ -279,6 +279,11 @@ function _updateState(valid, message) {
     }
     try {
         auto.toast(verifyResultMessage);
+    } catch (e) {}
+    try {
+        auto.setValue("卡密验证状态", valid ? "验证成功" : "验证失败");
+        auto.setValue("验证结果状态", String(valid));
+        auto.setValue("验证失败原因", valid ? "" : verifyResultMessage);
     } catch (e) {}
 }
 
