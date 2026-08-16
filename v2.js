@@ -294,6 +294,7 @@ function _isSecureEndpoint() {
 
 function _httpPost(path, obj) {
     try {
+        http.setTimeout(10);
         http.addHeader("Content-Type", "application/json");
     } catch (e) {}
     var res = http.postJson(_u + path, obj);
@@ -301,6 +302,9 @@ function _httpPost(path, obj) {
 }
 
 function _httpGet(path) {
+    try {
+        http.setTimeout(10);
+    } catch (e) {}
     var res = http.get(_u + path);
     return _extractBody(res);
 }

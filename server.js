@@ -24,7 +24,9 @@ function loadCards() {
 }
 
 function saveCards(cards) {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(cards, null, 2));
+    const tmp = DATA_FILE + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(cards, null, 2));
+    fs.renameSync(tmp, DATA_FILE);
 }
 
 function genCode() {
@@ -249,10 +251,15 @@ function checkCard(code, deviceId, fingerprint) {
 
 function handleVerify(req, res, body, isHeartbeat) {
     const tag = isHeartbeat ? 'heartbeat' : 'verify';
+    const ip = clientIp(req);
+    if (ipFailLocked(ip)) {
+        return respondSigned(res, (body && body.code) || '', { success: false, message: '失败次数过多，请 10 分钟后再试' });
+    }
     if (!body || typeof body.code !== 'string' || typeof body.device_id !== 'string' ||
         typeof body.device_fingerprint !== 'string' || typeof body.nonce !== 'string' ||
         (isHeartbeat && typeof body.token !== 'string')) {
         console.log('[' + tag + '] 参数不完整 keys=' + Object.keys(body || {}).join(','));
+        ipFailRecord(ip);
         return respondSigned(res, (body && body.code) || '', { success: false, message: '请求参数不完整' });
     }
     const signOk = verifyRequestSign(body);
@@ -260,15 +267,21 @@ function handleVerify(req, res, body, isHeartbeat) {
         ' nonce=' + (body.nonce ? 'set' : 'none') + ' ts=' + body.timestamp + ' sign=' + (signOk ? 'OK' : 'FAIL') +
         ' tsDiff=' + Math.abs(nowSec() - Number(body.timestamp || 0)) + 's');
     if (!signOk) {
+        ipFailRecord(ip);
         return respondSigned(res, body.code, { success: false, message: '请求签名校验失败' });
     }
     if (!checkNonce(body)) {
+        ipFailRecord(ip);
         return respondSigned(res, body.code, { success: false, message: '请求已过期或重复提交' });
     }
     const result = checkCard(body.code, body.device_id, body.device_fingerprint);
     if (!result.ok) {
+        if (result.reason !== '设备数已达上限') {
+            ipFailRecord(ip);
+        }
         return respondSigned(res, body.code, { success: false, message: result.reason });
     }
+    ipFailClear(ip);
     const tokKey = body.code + '|' + body.device_id;
     if (isHeartbeat) {
         if (!checkToken(tokKey, body.token)) {
@@ -328,6 +341,35 @@ function rateLimit(ip, limit) {
         }
     }
     return true;
+}
+
+/* ==================== 失败次数锁定（防暴破，按 IP） ==================== */
+const ipFailMap = new Map();
+const IP_FAIL_LIMIT = 10;
+const IP_FAIL_WINDOW = 600000;
+
+function ipFailRecord(ip) {
+    const now = Date.now();
+    let rec = ipFailMap.get(ip);
+    if (!rec || now > rec.until) {
+        rec = { count: 0, until: now + IP_FAIL_WINDOW };
+    }
+    rec.count++;
+    ipFailMap.set(ip, rec);
+}
+
+function ipFailLocked(ip) {
+    const rec = ipFailMap.get(ip);
+    if (!rec) return false;
+    if (Date.now() > rec.until) {
+        ipFailMap.delete(ip);
+        return false;
+    }
+    return rec.count >= IP_FAIL_LIMIT;
+}
+
+function ipFailClear(ip) {
+    ipFailMap.delete(ip);
 }
 
 let queue = Promise.resolve();
