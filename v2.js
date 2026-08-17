@@ -42,6 +42,7 @@ var sessionSalt = "";
 var saltTime = 0;
 var _deviceSalt = "";
 var _retryDelay = 5000;
+var _cardExpireAt = 0;
 
 /* 指纹兜底盐：设备盐文件持久化失败时使用，保证同一设备指纹稳定（同设备重复验证不判为新设备） */
 var _fallbackSalt = "";
@@ -61,6 +62,7 @@ function setup() {
     sessionSalt = "";
     saltTime = 0;
     _retryDelay = 5000;
+    _cardExpireAt = 0;
     _deviceSalt = _readFile(_deviceSaltFile);
     _uuidCipher = _readFile(_uuidFile);
     deviceFingerprint = _genDeviceFingerprint();
@@ -82,7 +84,19 @@ function loop(action) {
                 if (!isCardValid && (Date.now() - lastVerifyTime > _retryDelay)) {
                     _verify();
                 }
-                return isCardValid;
+                return _isCardActuallyValid();
+            }
+            case "条件类-判断卡密是否无效": {
+                if (isCardValid && (Date.now() - lastVerifyTime > _retryDelay)) {
+                    _verify();
+                }
+                return !_isCardActuallyValid();
+            }
+            case "条件类-3分钟检测卡密": {
+                if (Date.now() - lastVerifyTime >= 180000) {
+                    _verify();
+                }
+                return _isCardActuallyValid();
             }
             case "条件类-判断是否需要重新验证": {
                 return (Date.now() - lastVerifyTime) > 1800000;
@@ -122,6 +136,7 @@ function _verifyInternal() {
         }
         _retryDelay = 5000;
         sessionToken = result.token;
+        _cardExpireAt = result.expireAt || 0;
         _updateState(true, "验证成功");
         lastHeartbeatTime = Date.now();
         _touchHeartbeatTimer();
@@ -281,6 +296,7 @@ function _resetState() {
     lastVerifyTime = 0;
     sessionToken = "";
     lastHeartbeatTime = 0;
+    _cardExpireAt = 0;
     _touchHeartbeatTimer(true);
     auto.setValue("卡密验证状态", "未验证");
     auto.setValue("验证结果状态", "false");
@@ -292,6 +308,15 @@ function _resetState() {
 }
 
 /* ==================== 状态更新（同步写入编辑器变量，任何路径触发均刷新） ==================== */
+function _isCardActuallyValid() {
+    if (!isCardValid) return false;
+    if (_cardExpireAt > 0 && _cardExpireAt * 1000 < Date.now()) {
+        _updateState(false, "卡密已到期");
+        return false;
+    }
+    return true;
+}
+
 function _updateState(valid, message) {
     isCardValid = valid;
     verifyResultMessage = message || "";
