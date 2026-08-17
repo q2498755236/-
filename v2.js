@@ -382,7 +382,49 @@ function _maskId(id) {
 
 /* ==================== 设备指纹 ==================== */
 function _isFileAvailable() {
-    return typeof File !== "undefined";
+    return typeof file !== "undefined" || typeof File !== "undefined";
+}
+
+function _fileWrite(path, content) {
+    if (typeof file !== "undefined" && typeof file.write === "function") {
+        try { file.write(path, content); return true; } catch (e) {}
+    }
+    if (typeof File !== "undefined" && typeof File.write === "function") {
+        try { File.write(path, content); return true; } catch (e) {}
+    }
+    return false;
+}
+
+function _fileRead(path) {
+    if (typeof file !== "undefined" && typeof file.read === "function") {
+        try { return String(file.read(path) || ""); } catch (e) {}
+    }
+    if (typeof File !== "undefined" && typeof File.read === "function") {
+        try { return String(File.read(path) || ""); } catch (e) {}
+    }
+    return "";
+}
+
+function _fileExists(path) {
+    if (typeof file !== "undefined") {
+        if (typeof file.exists === "function") { try { return !!file.exists(path); } catch (e) {} }
+        if (typeof file.exist === "function") { try { return !!file.exist(path); } catch (e) {} }
+    }
+    if (typeof File !== "undefined") {
+        if (typeof File.exist === "function") { try { return !!File.exist(path); } catch (e) {} }
+        if (typeof File.exists === "function") { try { return !!File.exists(path); } catch (e) {} }
+    }
+    return false;
+}
+
+function _fileMkdir(path) {
+    if (typeof file !== "undefined") {
+        if (typeof file.mkdir === "function") { try { file.mkdir(path); return; } catch (e) {} }
+        if (typeof file.mkdirs === "function") { try { file.mkdirs(path); return; } catch (e) {} }
+    }
+    if (typeof File !== "undefined" && typeof File.mkdir === "function") {
+        try { File.mkdir(path); } catch (e) {}
+    }
 }
 
 function _varNameFor(path) {
@@ -409,28 +451,18 @@ function _writeVar(name, content) {
 }
 
 function _readFile(path) {
-    if (_isFileAvailable()) {
-        try {
-            if (File.exist(path)) return String(File.read(path) || "").trim();
-        } catch (e) {}
-    }
+    var v = _fileRead(path);
+    if (v) return v.trim();
     return _readVar(_varNameFor(path));
 }
 
 function _writeFile(path, content) {
     content = String(content);
-    if (_isFileAvailable()) {
-        try {
-            var idx = path.lastIndexOf("/");
-            var dir = idx > 0 ? path.substring(0, idx) : "";
-            if (dir) {
-                try {
-                    if (!File.exist(dir)) File.mkdir(dir);
-                } catch (e) {}
-            }
-            File.write(path, content);
-            if (_readFile(path) === content) return true;
-        } catch (e) {}
+    var idx = path.lastIndexOf("/");
+    var dir = idx > 0 ? path.substring(0, idx) : "";
+    if (dir) _fileMkdir(dir);
+    if (_fileWrite(path, content)) {
+        if (_fileRead(path) === content) return true;
     }
     return _writeVar(_varNameFor(path), content);
 }
