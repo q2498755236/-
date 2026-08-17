@@ -96,7 +96,7 @@ function loop(action) {
                 if (Date.now() - lastVerifyTime >= 180000) {
                     _verify();
                 }
-                return _isCardActuallyValid();
+                return !_isCardActuallyValid();
             }
             case "条件类-判断是否需要重新验证": {
                 return (Date.now() - lastVerifyTime) > 1800000;
