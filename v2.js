@@ -43,6 +43,13 @@ var saltTime = 0;
 var _deviceSalt = "";
 var _retryDelay = 5000;
 
+/* 指纹兜底盐：设备盐文件持久化失败时使用，保证同一设备指纹稳定（同设备重复验证不判为新设备） */
+var _fallbackSalt = "";
+function _getFallbackSalt() {
+    if (!_fallbackSalt) _fallbackSalt = _sha256("card_fp_fallback:" + _s).substring(0, 16);
+    return _fallbackSalt;
+}
+
 /* ==================== 初始化（工具加载时执行一次） ==================== */
 function setup() {
     isCardValid = false;
@@ -58,6 +65,7 @@ function setup() {
     _uuidCipher = _readFile(_uuidFile);
     deviceFingerprint = _genDeviceFingerprint();
     _syncTime();
+    console.log('设备盐文件: ' + (_deviceSalt ? '已加载' : '未找到') + ', UUID文件: ' + (_uuidCipher ? '已加载' : '未找到'));
     console.log('插件初始化完成');
     console.log('插件版本: ' + _pluginVersion);
     console.log('设备UUID: ' + (_uuidCipher ? _maskId(_uuidCipher) : '（未绑定，待首次验证下发）'));
@@ -118,7 +126,9 @@ function _verifyInternal() {
         _touchHeartbeatTimer();
         if (result.uuid && result.uuid !== _uuidCipher) {
             _uuidCipher = result.uuid;
-            _writeFile(_uuidFile, result.uuid);
+            if (!_writeFile(_uuidFile, result.uuid)) {
+                console.log('UUID 文件写入失败，下次验证将按指纹重新绑定');
+            }
         }
         console.log('验证成功：卡密有效，会话已建立');
         var _expireAt = result.expireAt || 0;
@@ -381,27 +391,52 @@ function _writeFile(path, content) {
     try {
         var idx = path.lastIndexOf("/");
         var dir = idx > 0 ? path.substring(0, idx) : "";
-        if (dir && !File.exist(dir)) File.mkdir(dir);
-        File.write(path, content);
-    } catch (e) {}
+        if (dir) {
+            try {
+                if (!File.exist(dir)) File.mkdir(dir);
+            } catch (e) {
+                console.log('创建目录失败: ' + dir);
+            }
+        }
+        try {
+            File.write(path, content);
+        } catch (e) {
+            console.log('写入文件失败: ' + path + ' - ' + e.message);
+            return false;
+        }
+        var check = _readFile(path);
+        if (check === String(content)) return true;
+        console.log('写入文件后校验不一致: ' + path);
+        return false;
+    } catch (e) {
+        console.log('文件写入异常: ' + e.message);
+    }
+    return false;
 }
 
 function _genDeviceFingerprint() {
-    if (!_deviceSalt || _deviceSalt.length < 8) {
+    var effectiveSalt = "";
+    if (_deviceSalt && _deviceSalt.length >= 8) {
+        effectiveSalt = _deviceSalt;
+    } else {
         var chars = "abcdef0123456789";
         var s = "";
         for (var i = 0; i < 16; i++) {
             s += chars.charAt(Math.floor(Math.random() * chars.length));
         }
         _deviceSalt = s;
-        _writeFile(_deviceSaltFile, s);
+        if (!_writeFile(_deviceSaltFile, s)) {
+            console.log('设备盐文件持久化失败，使用兜底盐保持指纹稳定');
+        }
+        var persisted = _readFile(_deviceSaltFile);
+        effectiveSalt = persisted.length >= 8 ? persisted : _getFallbackSalt();
     }
     var raw = (device.brand || "") + "|" + (device.model || "") + "|" + (device.product || "") +
               "|" + (device.width || "") + "|" + (device.height || "") + "|" + (device.dpi || "");
     if (String(raw).replace(/\|/g, "").length < 2) {
-        raw = raw + "|" + _deviceSalt;
+        raw = raw + "|" + effectiveSalt;
     }
-    return _sha256(raw + "|" + _deviceSalt + "|" + _s);
+    return _sha256(raw + "|" + effectiveSalt + "|" + _s);
 }
 
 /* ==================== 卡密获取 ==================== */
