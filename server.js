@@ -116,6 +116,36 @@ function checkToken(key, token) {
     return rec.token === token;
 }
 
+/* ==================== 设备 UUID（服务端签发并加密下发，客户端仅存密文回传） ==================== */
+const UUID_KEY = crypto.createHash('sha256').update('card_uuid_v1:' + SECRET).digest();
+
+function genUuid() {
+    return crypto.randomBytes(16).toString('hex');
+}
+
+function encryptUuid(uuid) {
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', UUID_KEY, iv);
+    const enc = Buffer.concat([cipher.update(String(uuid), 'utf8'), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    return Buffer.concat([iv, tag, enc]).toString('base64');
+}
+
+function decryptUuid(encoded) {
+    try {
+        const buf = Buffer.from(String(encoded), 'base64');
+        if (buf.length < 29) return null;
+        const iv = buf.subarray(0, 12);
+        const tag = buf.subarray(12, 28);
+        const data = buf.subarray(28);
+        const decipher = crypto.createDecipheriv('aes-256-gcm', UUID_KEY, iv);
+        decipher.setAuthTag(tag);
+        return decipher.update(data, null, 'utf8') + decipher.final('utf8');
+    } catch (e) {
+        return null;
+    }
+}
+
 /* ==================== RFC 6238 TOTP（SHA1 + 动态截断 + Base32 密钥） ==================== */
 function base32Decode(input) {
     const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
@@ -156,7 +186,7 @@ function verifyRequestSign(body) {
             'client_info=AutoJS-2.0.0',
             'code=' + body.code,
             'device_fingerprint=' + body.device_fingerprint,
-            'device_id=' + body.device_id,
+            'uuid=' + (body.uuid || ''),
             'nonce=' + body.nonce,
             'salt=' + body.salt,
             'totp=' + totp,
@@ -207,7 +237,7 @@ function respondSigned(res, code, payload) {
     respond(res, signResponse(code, payload));
 }
 
-function checkCard(code, deviceId, fingerprint) {
+function checkCard(code, uuidCipher, fingerprint) {
     const cards = loadCards();
     const card = cards[code];
     if (!card) return { ok: false, reason: '卡密不存在' };
@@ -218,35 +248,40 @@ function checkCard(code, deviceId, fingerprint) {
         saveCards(cards);
         return { ok: false, reason: '卡密已过期' };
     }
-    const bound = card.devices || [];
+    const devices = card.devices || [];
     if (!card.fingerprints) card.fingerprints = {};
     const fps = card.fingerprints;
-    if (bound.indexOf(deviceId) === -1) {
-        // 指纹兜底：deviceId 漂移时，若指纹与已绑定设备一致，视为同一设备换绑，不新增设备数
-        let matched = null;
-        for (const id of bound) {
-            if (fps[id] && fps[id] === fingerprint) { matched = id; break; }
+
+    // 已持有服务端签发的 UUID：解密校验绑定与指纹
+    if (uuidCipher) {
+        const uuid = decryptUuid(uuidCipher);
+        if (!uuid || devices.indexOf(uuid) === -1) {
+            return { ok: false, reason: '设备未绑定' };
         }
-        if (matched !== null) {
-            const idx = bound.indexOf(matched);
-            bound[idx] = deviceId;
-            delete fps[matched];
-            fps[deviceId] = fingerprint;
-            card.devices = bound;
-            card.fingerprints = fps;
-            saveCards(cards);
-            return { ok: true, reason: '验证成功', expireAt: card.expireAt || 0 };
+        if (fps[uuid] && fps[uuid] !== fingerprint) {
+            return { ok: false, reason: '设备指纹不匹配' };
         }
-        if (bound.length >= (card.maxDevices || MAX_DEVICES_DEFAULT)) {
-            return { ok: false, reason: '设备数已达上限' };
-        }
-        bound.push(deviceId);
-        fps[deviceId] = fingerprint;
-        card.devices = bound;
-        card.fingerprints = fps;
-        saveCards(cards);
+        return { ok: true, reason: '验证成功', expireAt: card.expireAt || 0, uuid: uuid };
     }
-    return { ok: true, reason: '验证成功', expireAt: card.expireAt || 0 };
+
+    // 无 UUID（首次验证或本地文件丢失）：指纹匹配已有绑定则复用，否则按设备数上限注册新设备
+    let matched = null;
+    for (const id of devices) {
+        if (fps[id] && fps[id] === fingerprint) { matched = id; break; }
+    }
+    if (matched !== null) {
+        return { ok: true, reason: '验证成功', expireAt: card.expireAt || 0, uuid: matched };
+    }
+    if (devices.length >= (card.maxDevices || MAX_DEVICES_DEFAULT)) {
+        return { ok: false, reason: '设备数已达上限' };
+    }
+    const uuid = genUuid();
+    devices.push(uuid);
+    fps[uuid] = fingerprint;
+    card.devices = devices;
+    card.fingerprints = fps;
+    saveCards(cards);
+    return { ok: true, reason: '验证成功', expireAt: card.expireAt || 0, uuid: uuid };
 }
 
 function handleVerify(req, res, body, isHeartbeat) {
@@ -255,15 +290,15 @@ function handleVerify(req, res, body, isHeartbeat) {
     if (ipFailLocked(ip)) {
         return respondSigned(res, (body && body.code) || '', { success: false, message: '失败次数过多，请 10 分钟后再试' });
     }
-    if (!body || typeof body.code !== 'string' || typeof body.device_id !== 'string' ||
-        typeof body.device_fingerprint !== 'string' || typeof body.nonce !== 'string' ||
+    if (!body || typeof body.code !== 'string' || typeof body.device_fingerprint !== 'string' ||
+        typeof body.nonce !== 'string' || (body.uuid !== undefined && body.uuid !== null && typeof body.uuid !== 'string') ||
         (isHeartbeat && typeof body.token !== 'string')) {
         console.log('[' + tag + '] 参数不完整 keys=' + Object.keys(body || {}).join(','));
         ipFailRecord(ip);
         return respondSigned(res, (body && body.code) || '', { success: false, message: '请求参数不完整' });
     }
     const signOk = verifyRequestSign(body);
-    console.log('[' + tag + '] code=' + maskCard(body.code) + ' device=' + maskId(body.device_id) +
+    console.log('[' + tag + '] code=' + maskCard(body.code) + ' uuid=' + (body.uuid ? 'set' : 'none') +
         ' nonce=' + (body.nonce ? 'set' : 'none') + ' ts=' + body.timestamp + ' sign=' + (signOk ? 'OK' : 'FAIL') +
         ' tsDiff=' + Math.abs(nowSec() - Number(body.timestamp || 0)) + 's');
     if (!signOk) {
@@ -274,7 +309,7 @@ function handleVerify(req, res, body, isHeartbeat) {
         ipFailRecord(ip);
         return respondSigned(res, body.code, { success: false, message: '请求已过期或重复提交' });
     }
-    const result = checkCard(body.code, body.device_id, body.device_fingerprint);
+    const result = checkCard(body.code, body.uuid || '', body.device_fingerprint);
     if (!result.ok) {
         if (result.reason !== '设备数已达上限') {
             ipFailRecord(ip);
@@ -282,7 +317,7 @@ function handleVerify(req, res, body, isHeartbeat) {
         return respondSigned(res, body.code, { success: false, message: result.reason });
     }
     ipFailClear(ip);
-    const tokKey = body.code + '|' + body.device_id;
+    const tokKey = body.code + '|' + result.uuid;
     if (isHeartbeat) {
         if (!checkToken(tokKey, body.token)) {
             console.log('[' + tag + '] 会话 token 校验失败，要求重新验证');
@@ -294,7 +329,8 @@ function handleVerify(req, res, body, isHeartbeat) {
         success: true,
         message: isHeartbeat ? '心跳正常' : result.reason,
         token: token,
-        expireAt: result.expireAt || 0
+        expireAt: result.expireAt || 0,
+        uuid: encryptUuid(result.uuid)
     });
 }
 

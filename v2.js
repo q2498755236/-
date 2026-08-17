@@ -3,13 +3,15 @@
  *   - TOTP 采用标准 RFC 6238（SHA1 + 动态截断 + Base32 密钥，兼容 Google Authenticator）
  *   - 请求签名 HMAC-SHA256(key = TOTP + 会话盐 + 种子)
  *   - 响应签名 HMAC-SHA256 校验，防伪造
+ * 设备绑定：服务端首次验证签发 UUID（AES-GCM 加密下发），客户端存密文并回传，
+ *   服务端解密校验绑定与指纹，客户端本地不再自造设备 ID（服务端可控、可吊销）
  * 依赖 API：http.get / http.postJson / http.addHeader / auto.getValue / auto.setValue
  *           / auto.getClip / auto.toast / device.brand / device.model / device.product
  */
 
 /* ==================== 配置区 (务必修改) ==================== */
-var _pluginVersion = "2.8.0";
-var _u = "https://3000-c334b93d6d869650.monkeycode-ai.online/api";
+var _pluginVersion = "2.9.0";
+var _u = "https://3000-8fae9ec7543c4704.monkeycode-ai.online/api";
 
 /* TOTP 种子：Base32 编码（RFC 4648），此处为混淆存储，运行时由 _unmask 还原。
  * 客户端被完全逆向时仍有泄露风险，请勿在注释中保留明文种子 */
@@ -23,12 +25,16 @@ var _hbIntervalMs = 60000;
 /* 设备指纹持久化文件：随机盐落盘后固定，保持指纹稳定（Root/模拟器可改硬件字段，此处只抬高门槛） */
 var _deviceSaltFile = "/sdcard/.card_auth/device_salt.dat";
 
+/* 设备 UUID 持久化文件：服务端首次验证签发（密文），客户端仅存储并在后续请求中回传，
+ * 文件丢失时由服务端按指纹匹配重新绑定 */
+var _uuidFile = "/sdcard/.card_auth/device_uuid.dat";
+
 /* ==================== 全局变量（setup 中重置） ==================== */
 var isCardValid = false;
 var lastVerifyTime = 0;
 var verifyResultMessage = "";
-var deviceId = "";
 var deviceFingerprint = "";
+var _uuidCipher = "";
 var sessionToken = "";
 var lastHeartbeatTime = 0;
 var serverTimeOffset = 0;
@@ -49,12 +55,12 @@ function setup() {
     saltTime = 0;
     _retryDelay = 5000;
     _deviceSalt = _readFile(_deviceSaltFile);
-    deviceId = _genDeviceId();
+    _uuidCipher = _readFile(_uuidFile);
     deviceFingerprint = _genDeviceFingerprint();
     _syncTime();
     console.log('插件初始化完成');
     console.log('插件版本: ' + _pluginVersion);
-    console.log('设备ID: ' + _maskId(deviceId));
+    console.log('设备UUID: ' + (_uuidCipher ? _maskId(_uuidCipher) : '（未绑定，待首次验证下发）'));
     console.log('服务器: ' + _u);
 }
 
@@ -110,6 +116,10 @@ function _verifyInternal() {
         _updateState(true, "验证成功");
         lastHeartbeatTime = Date.now();
         _touchHeartbeatTimer();
+        if (result.uuid && result.uuid !== _uuidCipher) {
+            _uuidCipher = result.uuid;
+            _writeFile(_uuidFile, result.uuid);
+        }
         console.log('验证成功：卡密有效，会话已建立');
         var _expireAt = result.expireAt || 0;
         var _expireText = "";
@@ -163,7 +173,7 @@ function _signedCall(path, retried, verbose) {
     var sign = _genSign(code, deviceFingerprint, timestamp, nonce, tokenVal, totp);
     var bodyObj = {
         code: code,
-        device_id: deviceId,
+        uuid: _uuidCipher,
         device_fingerprint: deviceFingerprint,
         client_info: "AutoJS-2.0.0",
         nonce: nonce,
@@ -208,7 +218,7 @@ function _signedCall(path, retried, verbose) {
         }
         return { success: false, message: msg, retryable: (msg.indexOf("会话已失效") > -1) };
     }
-    return { success: true, message: payload.message || "", token: payload.token || "", expireAt: payload.expireAt || 0 };
+    return { success: true, message: payload.message || "", token: payload.token || "", expireAt: payload.expireAt || 0, uuid: payload.uuid || "" };
 }
 
 function _parseJsonSafe(text) {
@@ -374,15 +384,6 @@ function _writeFile(path, content) {
         if (dir && !File.exist(dir)) File.mkdir(dir);
         File.write(path, content);
     } catch (e) {}
-}
-
-function _genDeviceId() {
-    var info = String(device.brand || "") + "_" + String(device.model || "") + "_" + String(device.product || "");
-    info = info.replace(/\s+/g, "").replace(/[^a-zA-Z0-9_]/g, "");
-    if (info.length < 4) {
-        info = "unknown_" + Math.floor(Math.random() * 1000000);
-    }
-    return "dev_" + _sha256(info).substring(0, 12);
 }
 
 function _genDeviceFingerprint() {
@@ -792,7 +793,7 @@ function _genSign(code, fingerprint, timestamp, nonce, token, totp) {
         "client_info=AutoJS-2.0.0",
         "code=" + code,
         "device_fingerprint=" + fingerprint,
-        "device_id=" + deviceId,
+        "uuid=" + (_uuidCipher || ""),
         "nonce=" + nonce,
         "salt=" + sessionSalt,
         "totp=" + totp,

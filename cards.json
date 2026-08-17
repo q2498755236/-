@@ -36,19 +36,26 @@
     "expireAt": 1787407561,
     "maxDevices": 2,
     "devices": [
-      "dev_22c1cb62c72b"
+      "dev_22c1cb62c72b",
+      "d43594815862f4f2914412967e61ee0e"
     ],
     "createdAt": 1786802761,
     "fingerprints": {
-      "dev_22c1cb62c72b": "b788c715884ae1ed7f5b0bc00a55388cb334eba45dd004eee87b6ffcb730eb3d"
+      "dev_22c1cb62c72b": "b788c715884ae1ed7f5b0bc00a55388cb334eba45dd004eee87b6ffcb730eb3d",
+      "d43594815862f4f2914412967e61ee0e": "56b55e2ec90026d5d1d36997fc669b2bf84ee23dc36490c07dee6b021003b3fe"
     }
   },
   "NJFW-UQLD-VTFT-V62C": {
     "status": "active",
     "expireAt": 0,
     "maxDevices": 1,
-    "devices": [],
-    "createdAt": 1786802802
+    "devices": [
+      "e60cd31a6015f42f5b94dc2b1d9a7f00"
+    ],
+    "createdAt": 1786802802,
+    "fingerprints": {
+      "e60cd31a6015f42f5b94dc2b1d9a7f00": "b8d44cc06c6aded45bc4168afb9e5da85a9e223150696d46382ae9ee1578f394"
+    }
   },
   "Z4WJ-BMDY-X5WS-5N6F": {
     "status": "active",
@@ -96,7 +103,24 @@
     "status": "active",
     "expireAt": 0,
     "maxDevices": 1,
-    "devices": [],
-    "createdAt": 1786813874
+    "devices": [
+      "c812061b985609b35b3b84f6092245da"
+    ],
+    "createdAt": 1786813874,
+    "fingerprints": {
+      "c812061b985609b35b3b84f6092245da": "233809ec1e247d4d052497891f5c96254ec47372e5b0a429b4e6f6539fa9e486"
+    }
+  },
+  "J5HD-LYR4-UV5F-VJ5J": {
+    "status": "active",
+    "expireAt": 0,
+    "maxDevices": 1,
+    "devices": [
+      "19b53357c83ef21eadec08da59e8255f"
+    ],
+    "createdAt": 1786939336,
+    "fingerprints": {
+      "19b53357c83ef21eadec08da59e8255f": "48867cc003b55820a410b9de97277e80e111344347669fd95c215016b2d2ec46"
+    }
   }
 }
