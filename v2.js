@@ -65,7 +65,8 @@ function setup() {
     _uuidCipher = _readFile(_uuidFile);
     deviceFingerprint = _genDeviceFingerprint();
     _syncTime();
-    console.log('设备盐文件: ' + (_deviceSalt ? '已加载' : '未找到') + ', UUID文件: ' + (_uuidCipher ? '已加载' : '未找到'));
+    console.log('设备盐: ' + (_deviceSalt ? '已加载' : '未找到') + ', UUID: ' + (_uuidCipher ? '已加载' : '未找到') +
+        ', 存储通道: ' + (_isFileAvailable() ? '文件' : '编辑器变量'));
     console.log('插件初始化完成');
     console.log('插件版本: ' + _pluginVersion);
     console.log('设备UUID: ' + (_uuidCipher ? _maskId(_uuidCipher) : '（未绑定，待首次验证下发）'));
@@ -380,38 +381,58 @@ function _maskId(id) {
 }
 
 /* ==================== 设备指纹 ==================== */
-function _readFile(path) {
+function _isFileAvailable() {
+    return typeof File !== "undefined";
+}
+
+function _varNameFor(path) {
+    if (String(path).indexOf("device_salt") > -1) return "S_卡密设备盐";
+    if (String(path).indexOf("device_uuid") > -1) return "S_卡密设备UUID";
+    return "S_卡密数据";
+}
+
+function _readVar(name) {
     try {
-        if (File.exist(path)) return String(File.read(path) || "").trim();
-    } catch (e) {}
-    return "";
+        return String(auto.getValue(name) || "").trim();
+    } catch (e) {
+        return "";
+    }
+}
+
+function _writeVar(name, content) {
+    try {
+        auto.setValue(name, String(content));
+        return _readVar(name) === String(content);
+    } catch (e) {
+        return false;
+    }
+}
+
+function _readFile(path) {
+    if (_isFileAvailable()) {
+        try {
+            if (File.exist(path)) return String(File.read(path) || "").trim();
+        } catch (e) {}
+    }
+    return _readVar(_varNameFor(path));
 }
 
 function _writeFile(path, content) {
-    try {
-        var idx = path.lastIndexOf("/");
-        var dir = idx > 0 ? path.substring(0, idx) : "";
-        if (dir) {
-            try {
-                if (!File.exist(dir)) File.mkdir(dir);
-            } catch (e) {
-                console.log('创建目录失败: ' + dir);
-            }
-        }
+    content = String(content);
+    if (_isFileAvailable()) {
         try {
+            var idx = path.lastIndexOf("/");
+            var dir = idx > 0 ? path.substring(0, idx) : "";
+            if (dir) {
+                try {
+                    if (!File.exist(dir)) File.mkdir(dir);
+                } catch (e) {}
+            }
             File.write(path, content);
-        } catch (e) {
-            console.log('写入文件失败: ' + path + ' - ' + e.message);
-            return false;
-        }
-        var check = _readFile(path);
-        if (check === String(content)) return true;
-        console.log('写入文件后校验不一致: ' + path);
-        return false;
-    } catch (e) {
-        console.log('文件写入异常: ' + e.message);
+            if (_readFile(path) === content) return true;
+        } catch (e) {}
     }
-    return false;
+    return _writeVar(_varNameFor(path), content);
 }
 
 function _genDeviceFingerprint() {
