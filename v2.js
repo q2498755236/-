@@ -137,6 +137,7 @@ function _verifyInternal() {
         _retryDelay = 5000;
         sessionToken = result.token;
         _cardExpireAt = result.expireAt || 0;
+        var _wasValid = isCardValid;
         _updateState(true, "验证成功");
         lastHeartbeatTime = Date.now();
         _touchHeartbeatTimer();
@@ -161,7 +162,9 @@ function _verifyInternal() {
             _expireText = _expireText + '，即将到期，请及时续费';
         }
         try {
-            auto.toast("卡密有效，有效期: " + _expireText);
+            if (!_wasValid) {
+                auto.toast("卡密有效，有效期: " + _expireText);
+            }
         } catch (e) {}
         return true;
     } catch (e) {
@@ -318,14 +321,17 @@ function _isCardActuallyValid() {
 }
 
 function _updateState(valid, message) {
+    var changed = isCardValid !== valid;
     isCardValid = valid;
     verifyResultMessage = message || "";
     if (!valid) {
         lastHeartbeatTime = 0;
     }
-    try {
-        auto.toast(verifyResultMessage);
-    } catch (e) {}
+    if (changed) {
+        try {
+            auto.toast(verifyResultMessage);
+        } catch (e) {}
+    }
     try {
         auto.setValue("卡密验证状态", valid ? "验证成功" : "验证失败");
         auto.setValue("验证结果状态", String(valid));
