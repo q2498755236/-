@@ -1,0 +1,8 @@
+{
+  "package_name": "com.myapp.automation",
+  "app_name": "我的自动化工具",
+  "version_code": 1,
+  "version_name": "1.0.0",
+  "scripts_dir": "/workspace/scripts",
+  "icon_dir": "/workspace/icons"
+}
