@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  # 构建服务
+  builder:
+    build: .
+    image: autoeditor-lean-builder:latest
+    container_name: autoeditor-builder
+    volumes:
+      # 基包（原 AutoEditor APK）
+      - ./base.apk:/workspace/base.apk:ro
+      # 构建配置
+      - ./config.json:/workspace/config.json:ro
+      # 用户脚本
+      - ./user_scripts:/workspace/scripts:ro
+      # 图标资源
+      - ./icons:/workspace/icons:ro
+      # 签名密钥
+      - ./keys:/keys:rw
+      # 输出目录
+      - ./output:/output:rw
+      # 工作目录（临时）
+      - build_cache:/workspace/build
+    environment:
+      - BASE_APK=/workspace/base.apk
+      - KEYSTORE=/keys/release.jks
+      - KEYSTORE_PASS=android
+      - KEY_ALIAS=release
+    # 默认执行构建
+    command: ["/workspace/config.json"]
+
+volumes:
+  build_cache:
