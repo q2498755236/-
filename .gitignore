@@ -1,2 +1,6 @@
 cards.json
 node_modules/
+backups/
+logs/
+ip_blacklist.json
+ip_whitelist.json

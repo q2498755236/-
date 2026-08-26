@@ -11,7 +11,7 @@
 
 /* ==================== 配置区 (务必修改) ==================== */
 var _pluginVersion = "2.9.0";
-var _u = "https://3000-8fae9ec7543c4704.monkeycode-ai.online/api";
+var _u = "https://3000-c6cc48a34df95b24.monkeycode-ai.online/api";
 
 /* TOTP 种子：Base32 编码（RFC 4648），此处为混淆存储，运行时由 _unmask 还原。
  * 客户端被完全逆向时仍有泄露风险，请勿在注释中保留明文种子 */
@@ -43,6 +43,10 @@ var saltTime = 0;
 var _deviceSalt = "";
 var _retryDelay = 5000;
 var _cardExpireAt = 0;
+
+/* 心跳连续失败计数：网络抖动时避免卡密状态频繁失效，连续 3 次失败才标记失效 */
+var _hbFailCount = 0;
+var _HB_MAX_FAIL = 3;
 
 /* 指纹兜底盐：设备盐文件持久化失败时使用，保证同一设备指纹稳定（同设备重复验证不判为新设备） */
 var _fallbackSalt = "";
@@ -129,8 +133,13 @@ function _verifyInternal() {
         lastVerifyTime = Date.now();
         var result = _signedCall("/verify", false, true);
         if (!result.success) {
-            _backoff();
-            console.log('验证失败: ' + result.message);
+            var cls = _classifyError(result.message);
+            if (cls.kind === 'business') {
+                _retryDelay = Math.min(_retryDelay + 30000, 600000);
+            } else {
+                _backoff();
+            }
+            console.log('验证失败: ' + result.message + ' (kind=' + cls.kind + ')');
             _updateState(false, result.message);
             return false;
         }
@@ -168,16 +177,53 @@ function _verifyInternal() {
         } catch (e) {}
         return true;
     } catch (e) {
+        var cls = _classifyError(e.message);
         _backoff();
-        console.log('验证异常: ' + e.message);
+        console.log('验证异常: ' + e.message + ' (kind=' + cls.kind + ')');
         _updateState(false, "网络异常: " + e.message);
         return false;
     }
 }
 
-/* 验证失败指数退避：5s -> 10s -> 20s -> 30s 封顶，成功后重置 */
+/* 验证失败指数退避：5s -> 10s -> 20s -> 40s 封顶，带 ±20% 随机抖动避免客户端雪崩 */
 function _backoff() {
-    _retryDelay = Math.min(_retryDelay * 2, 30000);
+    _retryDelay = Math.min(_retryDelay * 2, 40000);
+    var jitter = 0.8 + Math.random() * 0.4;
+    _retryDelay = Math.round(_retryDelay * jitter);
+}
+
+/* 错误分类：判断错误是否可自动重试
+ * 返回 { retryable: bool, kind: string }
+ *  - network    网络层故障（可重试）
+ *  - salt       会话盐失效（可重试，刷新盐后重试）
+ *  - signature  签名校验失败（可重试一次）
+ *  - retryable  服务端提示可重试（如会话已失效）
+ *  - business   业务拒绝（卡密无效/锁定/冻结/过期等，不可重试）
+ *  - fatal      致命错误（不可重试） */
+function _classifyError(message) {
+    var msg = String(message || '');
+    if (msg.indexOf('网络') > -1 || msg.indexOf('超时') > -1 ||
+        msg.indexOf('无法连接') > -1 || msg.indexOf('连接') > -1 ||
+        msg.indexOf('格式异常') > -1 || msg.indexOf('解析异常') > -1 ||
+        msg.indexOf('未获取到卡密') > -1) {
+        return { retryable: true, kind: 'network' };
+    }
+    if (msg.indexOf('会话盐') > -1 || msg.indexOf('会话已失效') > -1) {
+        return { retryable: true, kind: 'salt' };
+    }
+    if (msg.indexOf('签名') > -1) {
+        return { retryable: true, kind: 'signature' };
+    }
+    if (msg.indexOf('失败次数过多') > -1) {
+        return { retryable: false, kind: 'locked' };
+    }
+    if (msg.indexOf('不存在') > -1 || msg.indexOf('已锁定') > -1 ||
+        msg.indexOf('已冻结') > -1 || msg.indexOf('已过期') > -1 ||
+        msg.indexOf('已达上限') > -1 || msg.indexOf('未绑定') > -1 ||
+        msg.indexOf('指纹不匹配') > -1 || msg.indexOf('HTTPS') > -1) {
+        return { retryable: false, kind: 'business' };
+    }
+    return { retryable: true, kind: 'network' };
 }
 
 /* ==================== 签名请求通用流程（验证/心跳共用） ====================
@@ -214,6 +260,9 @@ function _signedCall(path, retried, verbose) {
     };
     if (verbose) console.log('请求验证卡密: code=' + _maskCode(code) + ' ts=' + timestamp + ' totp=****** nonce=****');
     var text = _httpPost(path, bodyObj);
+    if (text && typeof text === 'object' && text._err) {
+        return { success: false, message: text._err };
+    }
     var json = _parseJsonSafe(text);
     if (json && json.success === false && typeof json.data !== "string") {
         return { success: false, message: json.message || '请求失败' };
@@ -240,12 +289,13 @@ function _signedCall(path, retried, verbose) {
     }
     if (payload.success !== true) {
         var msg = payload.message || "验证失败";
-        if (!retried && (msg.indexOf("签名") > -1 || msg.indexOf("过期") > -1)) {
+        var cls = _classifyError(msg);
+        if (!retried && (cls.kind === 'salt' || cls.kind === 'signature')) {
             console.log('会话盐可能失效，刷新后重试');
             _syncTime();
             return _signedCall(path, true, verbose);
         }
-        return { success: false, message: msg, retryable: (msg.indexOf("会话已失效") > -1) };
+        return { success: false, message: msg, retryable: (cls.kind === 'salt') };
     }
     return { success: true, message: payload.message || "", token: payload.token || "", expireAt: payload.expireAt || 0, uuid: payload.uuid || "" };
 }
@@ -284,12 +334,29 @@ function _sendHeartbeat() {
                 _verify();
                 return;
             }
+            var cls = _classifyError(result.message);
+            if (cls.kind === 'network') {
+                _hbFailCount++;
+                console.log('心跳失败(' + _hbFailCount + '/' + _HB_MAX_FAIL + '): ' + result.message);
+                if (_hbFailCount >= _HB_MAX_FAIL) {
+                    _hbFailCount = 0;
+                    _updateState(false, result.message);
+                }
+                return;
+            }
+            _hbFailCount = 0;
             _updateState(false, result.message);
             return;
         }
+        _hbFailCount = 0;
         lastHeartbeatTime = Date.now();
     } catch (e) {
-        console.log('心跳失败: ' + e.message);
+        _hbFailCount++;
+        console.log('心跳异常(' + _hbFailCount + '/' + _HB_MAX_FAIL + '): ' + e.message);
+        if (_hbFailCount >= _HB_MAX_FAIL) {
+            _hbFailCount = 0;
+            _updateState(false, "心跳异常: " + e.message);
+        }
     }
 }
 
@@ -300,6 +367,7 @@ function _resetState() {
     sessionToken = "";
     lastHeartbeatTime = 0;
     _cardExpireAt = 0;
+    _hbFailCount = 0;
     _touchHeartbeatTimer(true);
     auto.setValue("卡密验证状态", "未验证");
     auto.setValue("验证结果状态", "false");
@@ -344,24 +412,42 @@ function _isSecureEndpoint() {
     return String(_u).indexOf("https://") === 0;
 }
 
+/* 网络请求封装：捕获异常并归类，超时/断网统一返回可重试的错误信息 */
 function _httpPost(path, obj) {
     try {
-        http.setTimeout(10);
-        http.addHeader("Content-Type", "application/json");
-    } catch (e) {}
-    var res = http.postJson(_u + path, obj);
-    return _extractBody(res);
+        try {
+            http.setTimeout(15);
+            http.addHeader("Content-Type", "application/json");
+        } catch (e) {}
+        var res = http.postJson(_u + path, obj);
+        return _extractBody(res);
+    } catch (e) {
+        var em = String(e && e.message ? e.message : e);
+        if (em.indexOf("timeout") > -1 || em.indexOf("timed out") > -1) {
+            return { _err: '网络超时，请检查网络连接' };
+        }
+        return { _err: '网络异常: ' + em };
+    }
 }
 
 function _httpGet(path) {
     try {
-        http.setTimeout(10);
-    } catch (e) {}
-    var res = http.get(_u + path);
-    return _extractBody(res);
+        try {
+            http.setTimeout(15);
+        } catch (e) {}
+        var res = http.get(_u + path);
+        return _extractBody(res);
+    } catch (e) {
+        var em = String(e && e.message ? e.message : e);
+        if (em.indexOf("timeout") > -1 || em.indexOf("timed out") > -1) {
+            return { _err: '网络超时，请检查网络连接' };
+        }
+        return { _err: '网络异常: ' + em };
+    }
 }
 
 function _extractBody(res) {
+    if (res && typeof res === 'object' && res._err) return res;
     if (typeof res === "string") return res;
     if (res && typeof res.body === "string") return res.body;
     if (res && typeof res.bodyString === "string") return res.bodyString;
@@ -372,6 +458,13 @@ function _extractBody(res) {
 function _syncTime() {
     try {
         var body = _httpGet("/time");
+        if (body && typeof body === 'object' && body._err) {
+            serverTimeOffset = 0;
+            sessionSalt = "";
+            saltTime = 0;
+            console.log('时间同步失败: ' + body._err);
+            return;
+        }
         var json = JSON.parse(body);
         if (json.timestamp) {
             var serverTime = json.timestamp * 1000;

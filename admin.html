@@ -10,7 +10,7 @@
         font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
         background: #f0f2f5; color: #1f2329; padding: 24px;
     }
-    .wrap { max-width: 1080px; margin: 0 auto; }
+    .wrap { max-width: 1300px; margin: 0 auto; }
     h1 { font-size: 22px; margin-bottom: 4px; }
     .sub { color: #8a919f; font-size: 13px; margin-bottom: 20px; }
     .card {
@@ -21,26 +21,41 @@
     .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
     .field { display: flex; flex-direction: column; gap: 6px; }
     .field label { font-size: 13px; color: #5f6672; }
-    input, select {
-        height: 34px; padding: 0 10px; border: 1px solid #dcdfe6; border-radius: 6px;
+    input, select, textarea {
+        padding: 0 10px; border: 1px solid #dcdfe6; border-radius: 6px;
         font-size: 14px; outline: none; background: #fff; color: #1f2329;
     }
-    input:focus { border-color: #3370ff; }
-    input[type=text], input[type=password] { width: 300px; }
-    input[type=number] { width: 120px; }
+    input:focus, select:focus, textarea:focus { border-color: #3370ff; }
+    input[type=text], input[type=password] { width: 260px; height: 34px; }
+    input[type=number] { width: 100px; height: 34px; }
+    select { height: 34px; width: 120px; }
+    textarea { font-family: monospace; font-size: 13px; resize: vertical; }
     button {
         height: 34px; padding: 0 16px; border: none; border-radius: 6px; font-size: 14px;
         cursor: pointer; background: #3370ff; color: #fff; transition: opacity .15s;
     }
     button:hover { opacity: 0.88; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
     button.ghost { background: #fff; color: #3370ff; border: 1px solid #3370ff; }
     button.danger { background: #f53f3f; }
+    button.success { background: #00b42a; }
     button.sm { height: 28px; padding: 0 10px; font-size: 13px; }
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+    .stat-card {
+        background: #f7f8fa; border-radius: 8px; padding: 12px 14px; text-align: center;
+    }
+    .stat-card .num { font-size: 26px; font-weight: 600; color: #1f2329; }
+    .stat-card .lbl { font-size: 12px; color: #8a919f; margin-top: 4px; }
+    .stat-card.active .num { color: #00b42a; }
+    .stat-card.locked .num { color: #f53f3f; }
+    .stat-card.frozen .num { color: #ff7d00; }
+    .stat-card.expired .num { color: #8a919f; }
     .table-wrap { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th, td { padding: 10px 8px; text-align: left; border-bottom: 1px solid #f0f0f0; white-space: nowrap; }
+    th, td { padding: 8px 6px; text-align: left; border-bottom: 1px solid #f0f0f0; white-space: nowrap; }
     th { color: #8a919f; font-weight: 500; background: #fafbfc; }
     tr:hover td { background: #f7f9ff; }
+    tr.selected td { background: #e8f0ff; }
     .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
     .tag.active { background: #e8f7ee; color: #00b42a; }
     .tag.locked { background: #fff1f0; color: #f53f3f; }
@@ -49,17 +64,58 @@
     .msg { padding: 10px 14px; border-radius: 6px; margin-bottom: 14px; font-size: 13px; display: none; }
     .msg.ok { display: block; background: #e8f7ee; color: #00b42a; }
     .msg.err { display: block; background: #fff1f0; color: #f53f3f; }
-    .actions { display: flex; gap: 6px; }
+    .actions { display: flex; gap: 4px; }
     .muted { color: #8a919f; font-size: 12px; }
     .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; gap: 12px; flex-wrap: wrap; }
+    .toolbar-left { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .toolbar-right { display: flex; gap: 8px; align-items: center; }
     .empty { text-align: center; color: #8a919f; padding: 30px 0; }
-    pre.out { background: #1f2329; color: #b8e986; padding: 10px; border-radius: 6px; font-size: 12px; overflow-x: auto; margin-top: 12px; white-space: pre-wrap; word-break: break-all; }
+    pre.out { background: #1f2329; color: #b8e986; padding: 10px; border-radius: 6px; font-size: 12px; overflow-x: auto; margin-top: 12px; white-space: pre-wrap; word-break: break-all; max-height: 300px; overflow-y: auto; }
+    .pagination { display: flex; justify-content: center; align-items: center; gap: 8px; margin-top: 16px; }
+    .pagination button { height: 30px; padding: 0 10px; font-size: 13px; }
+    .pagination .current { color: #3370ff; font-weight: 600; font-size: 14px; padding: 0 8px; }
+    .batch-bar {
+        background: #e8f0ff; border-radius: 6px; padding: 8px 14px; margin-bottom: 12px;
+        display: flex; align-items: center; gap: 10px; font-size: 13px;
+    }
+    .batch-bar .count { color: #3370ff; font-weight: 600; }
+    .batch-bar button { height: 28px; font-size: 12px; padding: 0 10px; }
+    .modal-overlay {
+        position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center;
+        z-index: 1000;
+    }
+    .modal {
+        background: #fff; border-radius: 10px; padding: 24px; min-width: 400px; max-width: 640px;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.15); max-height: 80vh; overflow-y: auto;
+    }
+    .modal h3 { margin-bottom: 16px; }
+    .modal-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+    .loading { display: inline-block; width: 14px; height: 14px; border: 2px solid #3370ff; border-top-color: transparent; border-radius: 50%; animation: spin .6s linear infinite; margin-right: 6px; vertical-align: middle; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .tabs { display: flex; gap: 0; border-bottom: 2px solid #f0f0f0; margin-bottom: 16px; }
+    .tab { padding: 8px 16px; cursor: pointer; font-size: 14px; color: #8a919f; border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all .15s; }
+    .tab:hover { color: #3370ff; }
+    .tab.active { color: #3370ff; border-bottom-color: #3370ff; font-weight: 500; }
+    .log-line { padding: 4px 8px; font-family: monospace; font-size: 12px; border-bottom: 1px solid #f5f5f5; word-break: break-all; }
+    .log-line:nth-child(odd) { background: #fafbfc; }
+    .note-cell { max-width: 120px; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+    .note-cell:hover { color: #3370ff; }
+    .device-list { display: flex; flex-wrap: wrap; gap: 4px; }
+    .device-tag { display: inline-flex; align-items: center; gap: 4px; background: #f0f2f5; padding: 2px 8px; border-radius: 4px; font-size: 11px; }
+    .device-tag button { height: 18px; width: 18px; padding: 0; border-radius: 50%; font-size: 10px; line-height: 1; background: #f53f3f; }
+    .toggle-switch { position: relative; display: inline-block; width: 40px; height: 22px; }
+    .toggle-switch input { display: none; }
+    .toggle-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background: #dcdfe6; border-radius: 22px; transition: .2s; }
+    .toggle-slider:before { position: absolute; content: ""; height: 16px; width: 16px; left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: .2s; }
+    .toggle-switch input:checked + .toggle-slider { background: #3370ff; }
+    .toggle-switch input:checked + .toggle-slider:before { transform: translateX(18px); }
 </style>
 </head>
 <body>
 <div class="wrap">
-    <h1>卡密验证系统 · 管理面板</h1>
-    <div class="sub">生成卡密 / 查看状态 / 锁定冻结管理（数据实时落盘 cards.json）</div>
+    <h1>卡密验证系统 - 管理面板</h1>
+    <div class="sub">生成卡密 / 设备管理 / 日志审计 / 安全防护</div>
 
     <div class="card">
         <div class="row">
@@ -68,8 +124,16 @@
                 <input type="password" id="adminToken" placeholder="Bearer Token">
             </div>
             <button class="ghost" onclick="saveToken()">保存</button>
-            <div class="muted" style="align-self:center">默认 admin123456，仅测试用途</div>
+            <span class="muted" style="align-self:center">默认 admin123456</span>
         </div>
+    </div>
+
+    <div id="statsPanel" class="card" style="display:none">
+        <div class="toolbar">
+            <h2>数据概览</h2>
+            <button class="ghost sm" onclick="loadStats()">刷新</button>
+        </div>
+        <div class="stats" id="statsGrid"></div>
     </div>
 
     <div id="msg"></div>
@@ -77,107 +141,268 @@
     <div class="card">
         <h2>生成卡密</h2>
         <div class="row">
-            <div class="field">
-                <label>数量 (1-1000)</label>
-                <input type="number" id="issueCount" value="1" min="1" max="1000">
-            </div>
-            <div class="field">
-                <label>有效期(天, 0=永久)</label>
-                <input type="number" id="issueDays" value="0" min="0">
-            </div>
-            <div class="field">
-                <label>最大设备数</label>
-                <input type="number" id="issueMaxDev" value="1" min="1">
-            </div>
+            <div class="field"><label>数量 (1-1000)</label><input type="number" id="issueCount" value="1" min="1" max="1000"></div>
+            <div class="field"><label>有效期(天, 0=永久)</label><input type="number" id="issueDays" value="0" min="0"></div>
+            <div class="field"><label>计时模式</label><select id="issueExpireMode">
+                <option value="create">生成计时</option>
+                <option value="activate">激活计时</option>
+            </select></div>
+            <div class="field"><label>最大设备数</label><input type="number" id="issueMaxDev" value="1" min="1"></div>
+            <div class="field"><label>前缀(可选)</label><input type="text" id="issuePrefix" maxlength="6" placeholder="如 VIP" style="width:100px"></div>
             <button onclick="doIssue()">生成卡密</button>
         </div>
         <div id="issueOut"></div>
     </div>
 
     <div class="card">
-        <div class="toolbar">
-            <h2>卡密列表</h2>
-            <div>
-                <button class="ghost" onclick="loadList()">刷新</button>
-            </div>
+        <div class="tabs" id="mainTabs">
+            <div class="tab active" onclick="switchTab('list')">卡密列表</div>
+            <div class="tab" onclick="switchTab('logs')">操作日志</div>
+            <div class="tab" onclick="switchTab('security')">安全防护</div>
         </div>
-        <div class="table-wrap">
-            <table>
-                <thead>
-                    <tr>
-                        <th>卡密</th>
-                        <th>状态</th>
-                        <th>有效期至</th>
-                        <th>最大设备</th>
-                        <th>已绑设备</th>
-                        <th>创建时间</th>
-                        <th>操作</th>
-                    </tr>
-                </thead>
-                <tbody id="listBody"></tbody>
-            </table>
-            <div class="empty" id="emptyTip" style="display:none">暂无卡密，先在上方生成</div>
+
+        <div id="tabList">
+            <div class="toolbar">
+                <div class="toolbar-left">
+                    <input type="text" id="searchInput" placeholder="搜索卡密或备注..." style="width:200px" oninput="onSearchChange()">
+                    <select id="statusFilter" onchange="onSearchChange()">
+                        <option value="">全部状态</option>
+                        <option value="active">活跃</option>
+                        <option value="locked">已锁定</option>
+                        <option value="frozen">已冻结</option>
+                        <option value="expired">已过期</option>
+                    </select>
+                </div>
+                <div class="toolbar-right">
+                    <button class="ghost sm" onclick="loadList()">刷新</button>
+                    <button class="ghost sm" onclick="exportCSV()">导出 CSV</button>
+                    <button class="ghost sm" onclick="exportTXT()">导出 TXT</button>
+                </div>
+            </div>
+
+            <div class="batch-bar" id="batchBar" style="display:none">
+                <span>已选 <span class="count" id="batchCount">0</span> 张</span>
+                <button class="sm" onclick="batchAction('lock')">批量锁定</button>
+                <button class="sm" onclick="batchAction('unlock')">批量解锁</button>
+                <button class="sm" onclick="batchAction('freeze')">批量冻结</button>
+                <button class="sm" onclick="batchAction('unfreeze')">批量解冻</button>
+                <button class="sm danger" onclick="batchAction('delete')">批量删除</button>
+                <button class="sm ghost" onclick="clearSelection()">取消</button>
+            </div>
+
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width:36px"><input type="checkbox" id="selectAll" onclick="toggleSelectAll()"></th>
+                            <th>卡密</th>
+                            <th>状态</th>
+                            <th>备注</th>
+                            <th>有效期至</th>
+                            <th>计时模式</th>
+                            <th>设备</th>
+                            <th>使用次数</th>
+                            <th>创建时间</th>
+                            <th style="width:200px">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="listBody"></tbody>
+                </table>
+                <div class="empty" id="emptyTip" style="display:none">暂无卡密</div>
+                <div class="empty" id="loadingTip" style="display:none"><span class="loading"></span>加载中...</div>
+            </div>
+            <div class="pagination" id="pagination"></div>
+        </div>
+
+        <div id="tabLogs" style="display:none">
+            <div class="toolbar">
+                <div class="toolbar-left">
+                    <select id="logTypeFilter" onchange="loadLogs()">
+                        <option value="">全部类型</option>
+                        <option value="生成卡密">生成卡密</option>
+                        <option value="卡密操作">卡密操作</option>
+                        <option value="批量操作">批量操作</option>
+                        <option value="设备解绑">设备解绑</option>
+                        <option value="备注更新">备注更新</option>
+                        <option value="IP 黑名单">IP 黑名单</option>
+                        <option value="IP 白名单">IP 白名单</option>
+                    </select>
+                </div>
+                <div class="toolbar-right">
+                    <button class="ghost sm" onclick="loadLogs()">刷新</button>
+                </div>
+            </div>
+            <div id="logsContent" style="max-height:500px; overflow-y:auto"></div>
+            <div class="pagination" id="logPagination"></div>
+        </div>
+
+        <div id="tabSecurity" style="display:none">
+            <div class="row" style="gap:24px">
+                <div style="flex:1; min-width:300px">
+                    <h2>IP 黑名单</h2>
+                    <div class="row" style="margin-bottom:12px">
+                        <input type="text" id="blIp" placeholder="IP 地址" style="width:150px">
+                        <input type="text" id="blReason" placeholder="拉黑原因" style="width:180px">
+                        <button class="sm" onclick="addBlacklist()">添加</button>
+                    </div>
+                    <div id="blacklistTable"></div>
+                </div>
+                <div style="flex:1; min-width:300px">
+                    <h2>IP 白名单
+                        <label class="toggle-switch" style="vertical-align:middle; margin-left:8px">
+                            <input type="checkbox" id="wlEnabled" onchange="toggleWhitelist()">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </h2>
+                    <div class="row" style="margin-bottom:12px">
+                        <input type="text" id="wlIp" placeholder="IP 地址" style="width:150px">
+                        <button class="sm" onclick="addWhitelist()">添加</button>
+                    </div>
+                    <div id="whitelistTable"></div>
+                </div>
+            </div>
         </div>
     </div>
 </div>
 
+<div class="modal-overlay" id="modalOverlay" style="display:none" onclick="closeModal(event)">
+    <div class="modal" id="modalContent"></div>
+</div>
+
 <script>
-var token = localStorage.getItem('adminToken') || 'admin123456';
+var token = sessionStorage.getItem('adminToken') || 'admin123456';
+var currentPage = 1, logPage = 1, pageSize = 30, logPageSize = 50;
+var selectedCodes = new Set();
+var lastSearch = '', lastStatus = '';
+var currentTab = 'list';
+
 document.getElementById('adminToken').value = token;
 
 function saveToken() {
     token = document.getElementById('adminToken').value.trim() || 'admin123456';
-    localStorage.setItem('adminToken', token);
-    showMsg('Token 已保存', true);
+    sessionStorage.setItem('adminToken', token);
+    showMsg('Token 已保存（会话级，关闭浏览器后清除）', true);
+    loadStats(); loadList(); loadLogs(); loadSecurity();
 }
 
 function showMsg(text, ok) {
     var el = document.getElementById('msg');
     el.className = ok ? 'msg ok' : 'msg err';
     el.textContent = text;
-    setTimeout(function () { el.className = 'msg'; }, 4000);
+    setTimeout(function() { el.className = 'msg'; }, 4000);
+}
+
+function copyCodes(btn) {
+    var text = window._lastCodes || '';
+    if (!text) return;
+    navigator.clipboard.writeText(text).then(function() {
+        btn.textContent = '已复制';
+        setTimeout(function() { btn.textContent = '一键复制'; }, 2000);
+    }).catch(function() {
+        var ta = document.createElement('textarea');
+        ta.value = text; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+        document.body.appendChild(ta); ta.select();
+        document.execCommand('copy'); document.body.removeChild(ta);
+        btn.textContent = '已复制';
+        setTimeout(function() { btn.textContent = '一键复制'; }, 2000);
+    });
 }
 
 function api(method, path, body) {
-    var opts = {
-        method: method,
-        headers: { 'Authorization': 'Bearer ' + token }
-    };
-    if (body) {
-        opts.headers['Content-Type'] = 'application/json';
-        opts.body = JSON.stringify(body);
-    }
-    return fetch(path, opts).then(function (r) { return r.json(); });
+    var opts = { method: method, headers: { 'Authorization': 'Bearer ' + (token || 'admin123456') } };
+    if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+    return fetch(path, opts).then(function(r) {
+        if (r.status === 401) { showMsg('Token 无效', false); throw new Error('Unauthorized'); }
+        if (r.status === 403) { showMsg('IP 被拒绝访问', false); throw new Error('Forbidden'); }
+        return r.json();
+    });
 }
 
 function fmtTime(ts) {
     if (!ts) return '永久';
     var d = new Date(ts * 1000);
-    var p = function (n) { return (n < 10 ? '0' : '') + n; };
+    var p = function(n) { return (n < 10 ? '0' : '') + n; };
     return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
 }
 
-function fmtDevices(devs) {
-    if (!devs || !devs.length) return '-';
-    return devs.join(', ');
+function switchTab(tab) {
+    currentTab = tab;
+    document.querySelectorAll('#mainTabs .tab').forEach(function(t) { t.classList.remove('active'); });
+    document.querySelector('#mainTabs .tab[onclick*="' + tab + '"]').classList.add('active');
+    document.getElementById('tabList').style.display = tab === 'list' ? 'block' : 'none';
+    document.getElementById('tabLogs').style.display = tab === 'logs' ? 'block' : 'none';
+    document.getElementById('tabSecurity').style.display = tab === 'security' ? 'block' : 'none';
+    if (tab === 'logs') loadLogs();
+    if (tab === 'security') loadSecurity();
+}
+
+function onSearchChange() {
+    lastSearch = document.getElementById('searchInput').value.trim();
+    lastStatus = document.getElementById('statusFilter').value;
+    currentPage = 1; selectedCodes.clear(); updateBatchBar(); loadList();
+}
+
+function loadStats() {
+    api('GET', '/api/admin/stats').then(function(json) {
+        if (!json.success) return;
+        var s = json.stats;
+        document.getElementById('statsPanel').style.display = 'block';
+        var cards = [
+            { cls: 'total', label: '总计', num: s.total, color: '#1f2329' },
+            { cls: 'active', label: '活跃', num: s.active, color: '#00b42a' },
+            { cls: 'locked', label: '已锁定', num: s.locked, color: '#f53f3f' },
+            { cls: 'frozen', label: '已冻结', num: s.frozen, color: '#ff7d00' },
+            { cls: 'expired', label: '已过期', num: s.expired, color: '#8a919f' },
+            { cls: '', label: '已使用', num: s.usedCards, color: '#3370ff' },
+            { cls: '', label: '未使用', num: s.unusedCards, color: '#8a919f' },
+            { cls: '', label: '绑定设备', num: s.totalDevices, color: '#722ed1' },
+            { cls: '', label: '总验证次数', num: s.totalUseCount, color: '#ff7d00' }
+        ];
+        document.getElementById('statsGrid').innerHTML = cards.map(function(c) {
+            return '<div class="stat-card ' + c.cls + '"><div class="num" style="color:' + c.color + '">' + c.num + '</div><div class="lbl">' + c.label + '</div></div>';
+        }).join('');
+    }).catch(function() {});
 }
 
 function loadList() {
-    api('GET', '/api/admin/list').then(function (json) {
+    var body = document.getElementById('listBody');
+    var emptyTip = document.getElementById('emptyTip');
+    var loadingTip = document.getElementById('loadingTip');
+    loadingTip.style.display = 'block'; emptyTip.style.display = 'none'; body.innerHTML = '';
+
+    var params = '?page=' + currentPage + '&size=' + pageSize;
+    if (lastSearch) params += '&search=' + encodeURIComponent(lastSearch);
+    if (lastStatus) params += '&status=' + encodeURIComponent(lastStatus);
+
+    api('GET', '/api/admin/list' + params).then(function(json) {
+        loadingTip.style.display = 'none';
         if (!json.success) { showMsg(json.message || '加载失败'); return; }
-        var body = document.getElementById('listBody');
         var list = json.cards || [];
-        body.innerHTML = '';
-        document.getElementById('emptyTip').style.display = list.length ? 'none' : 'block';
-        list.forEach(function (c) {
+        var pg = json.pagination || {};
+        emptyTip.style.display = list.length ? 'none' : 'block';
+
+        list.forEach(function(c) {
             var tr = document.createElement('tr');
-            var statusTag = '<span class="tag ' + c.status + '">' + c.status + '</span>';
+            if (selectedCodes.has(c.code)) tr.classList.add('selected');
+            var checked = selectedCodes.has(c.code) ? ' checked' : '';
+            var devicesHtml = '';
+            if (c.devices && c.devices.length > 0) {
+                devicesHtml = '<div class="device-list">' + c.devices.map(function(d) {
+                    var fp = c.fingerprints ? (c.fingerprints[d] || '').substring(0, 8) : '';
+                    return '<span class="device-tag" title="指纹: ' + (fp || '未知') + '">' + d.substring(0, 12) + '...<button onclick="unbindDevice(\'' + c.code + '\',\'' + d + '\')" title="解绑">x</button></span>';
+                }).join('') + '</div>';
+            } else {
+                devicesHtml = '<span class="muted">-</span>';
+            }
             tr.innerHTML =
+                '<td><input type="checkbox" data-code="' + c.code + '"' + checked + ' onclick="toggleCode(event, \'' + c.code + '\')"></td>' +
                 '<td><code>' + c.code + '</code></td>' +
-                '<td>' + statusTag + '</td>' +
+                '<td><span class="tag ' + c.status + '">' + c.status + '</span></td>' +
+                '<td class="note-cell" onclick="editNote(\'' + c.code + '\',\'' + (c.note || '').replace(/'/g, "\\'") + '\')" title="点击编辑备注">' + (c.note || '<span class="muted">无</span>') + '</td>' +
                 '<td>' + fmtTime(c.expireAt) + '</td>' +
-                '<td>' + c.maxDevices + '</td>' +
-                '<td title="' + fmtDevices(c.devices) + '">' + (c.devices || []).length + ' / ' + c.maxDevices + '</td>' +
+                '<td><span class="tag" style="background:' + (c.expireMode === 'activate' ? '#e8f0ff;color:#3370ff' : '#f0f2f5;color:#8a919f') + '">' + (c.expireMode === 'activate' ? '激活计时' : '生成计时') + '</span></td>' +
+                '<td>' + devicesHtml + '</td>' +
+                '<td>' + (c.useCount || 0) + '</td>' +
                 '<td>' + fmtTime(c.createdAt) + '</td>' +
                 '<td><div class="actions">' +
                 '<button class="sm" onclick="doAction(\'' + c.code + '\',\'lock\')">锁定</button>' +
@@ -188,31 +413,279 @@ function loadList() {
                 '</div></td>';
             body.appendChild(tr);
         });
-    }).catch(function (e) { showMsg('请求失败: ' + e.message); });
+        renderPagination(pg, 'pagination', goPage);
+        updateSelectAllState();
+    }).catch(function(e) {
+        loadingTip.style.display = 'none';
+        if (e.message !== 'Unauthorized' && e.message !== 'Forbidden') showMsg('请求失败: ' + e.message);
+    });
+}
+
+function loadLogs() {
+    var params = '?page=' + logPage + '&size=' + logPageSize;
+    var typeFilter = document.getElementById('logTypeFilter').value;
+    if (typeFilter) params += '&type=' + encodeURIComponent(typeFilter);
+
+    api('GET', '/api/admin/logs' + params).then(function(json) {
+        if (!json.success) return;
+        var logs = json.logs || [];
+        var pg = json.pagination || {};
+        var html = logs.length ? '' : '<div class="empty">暂无日志</div>';
+        logs.forEach(function(l) {
+            html += '<div class="log-line">' + l + '</div>';
+        });
+        document.getElementById('logsContent').innerHTML = html;
+        renderPagination(pg, 'logPagination', goLogPage);
+    }).catch(function() {});
+}
+
+function goPage(p) { currentPage = p; loadList(); }
+function goLogPage(p) { logPage = p; loadLogs(); }
+
+function renderPagination(pg, id, handler) {
+    var p = document.getElementById(id);
+    if (!pg || pg.pages <= 1) { p.innerHTML = ''; return; }
+    var html = '';
+    html += '<button class="ghost sm" ' + (pg.page <= 1 ? 'disabled' : '') + ' onclick="' + handler.name + '(' + (pg.page - 1) + ')">上一页</button>';
+    html += '<span class="current">' + pg.page + ' / ' + pg.pages + '</span>';
+    html += '<button class="ghost sm" ' + (pg.page >= pg.pages ? 'disabled' : '') + ' onclick="' + handler.name + '(' + (pg.page + 1) + ')">下一页</button>';
+    html += '<span class="muted">共 ' + pg.total + ' 条</span>';
+    p.innerHTML = html;
+}
+
+function toggleCode(e, code) {
+    e.stopPropagation();
+    if (e.target.checked) selectedCodes.add(code); else selectedCodes.delete(code);
+    updateBatchBar(); updateSelectAllState();
+}
+
+function toggleSelectAll() {
+    var checkboxes = document.querySelectorAll('#listBody input[type=checkbox]');
+    var all = document.getElementById('selectAll');
+    checkboxes.forEach(function(cb) {
+        if (all.checked) selectedCodes.add(cb.getAttribute('data-code'));
+        else selectedCodes.delete(cb.getAttribute('data-code'));
+        cb.checked = all.checked;
+    });
+    updateBatchBar();
+    document.querySelectorAll('#listBody tr').forEach(function(tr) {
+        if (all.checked) tr.classList.add('selected'); else tr.classList.remove('selected');
+    });
+}
+
+function updateSelectAllState() {
+    var checkboxes = document.querySelectorAll('#listBody input[type=checkbox]');
+    var all = document.getElementById('selectAll');
+    all.checked = checkboxes.length > 0 && Array.from(checkboxes).every(function(cb) { return cb.checked; });
+    all.indeterminate = !all.checked && Array.from(checkboxes).some(function(cb) { return cb.checked; });
+}
+
+function updateBatchBar() {
+    var bar = document.getElementById('batchBar');
+    document.getElementById('batchCount').textContent = selectedCodes.size;
+    bar.style.display = selectedCodes.size > 0 ? 'flex' : 'none';
+}
+
+function clearSelection() { selectedCodes.clear(); updateBatchBar(); loadList(); }
+
+function batchAction(action) {
+    if (selectedCodes.size === 0) return;
+    var codes = Array.from(selectedCodes);
+    if (action === 'delete' && !confirm('确认删除 ' + codes.length + ' 张卡密？此操作不可恢复。')) return;
+    if (!confirm('确认对 ' + codes.length + ' 张卡密执行 ' + action + '？')) return;
+    api('POST', '/api/admin/batch', { codes: codes, action: action }).then(function(json) {
+        if (!json.success) { showMsg(json.message || '操作失败'); return; }
+        showMsg('成功 ' + json.affected + ' 张, 跳过 ' + json.skipped + ' 张', true);
+        selectedCodes.clear(); updateBatchBar(); loadList(); loadStats();
+    }).catch(function() {});
 }
 
 function doIssue() {
     var count = parseInt(document.getElementById('issueCount').value, 10) || 1;
     var days = parseInt(document.getElementById('issueDays').value, 10) || 0;
     var maxDev = parseInt(document.getElementById('issueMaxDev').value, 10) || 1;
-    api('POST', '/api/admin/issue', { count: count, days: days, max_devices: maxDev }).then(function (json) {
+    var prefix = document.getElementById('issuePrefix').value.trim().toUpperCase();
+    var expireMode = document.getElementById('issueExpireMode').value;
+    api('POST', '/api/admin/issue', { count: count, days: days, max_devices: maxDev, prefix: prefix, expire_mode: expireMode }).then(function(json) {
         if (!json.success) { showMsg(json.message || '生成失败'); return; }
         showMsg('成功生成 ' + json.codes.length + ' 张卡密', true);
-        document.getElementById('issueOut').innerHTML = '<pre class="out">' + json.codes.join('\n') + '</pre>';
-        loadList();
-    }).catch(function (e) { showMsg('请求失败: ' + e.message); });
+        var codesText = json.codes.join('\n');
+        document.getElementById('issueOut').innerHTML = '<div style="display:flex;align-items:flex-start;gap:8px"><pre class="out" style="flex:1">' + codesText + '</pre><button class="sm" onclick="copyCodes(this)">一键复制</button></div>';
+        window._lastCodes = codesText;
+        loadList(); loadStats();
+    }).catch(function(e) { showMsg('请求失败: ' + e.message); });
 }
 
 function doAction(code, action) {
-    if (action === 'delete' && !confirm('确认删除卡密 ' + code + '？此操作不可恢复。')) return;
-    api('POST', '/api/admin/card', { code: code, action: action }).then(function (json) {
+    if (action === 'delete' && !confirm('确认删除卡密 ' + code + '？')) return;
+    api('POST', '/api/admin/card', { code: code, action: action }).then(function(json) {
         if (!json.success) { showMsg(json.message || '操作失败'); return; }
         showMsg('操作成功: ' + code + ' -> ' + action, true);
-        loadList();
-    }).catch(function (e) { showMsg('请求失败: ' + e.message); });
+        selectedCodes.delete(code); updateBatchBar(); loadList(); loadStats();
+    }).catch(function(e) { showMsg('请求失败: ' + e.message); });
 }
 
-loadList();
+function unbindDevice(code, deviceUuid) {
+    if (!confirm('确认解绑设备 ' + deviceUuid.substring(0, 12) + '...？')) return;
+    api('POST', '/api/admin/unbind', { code: code, device_uuid: deviceUuid }).then(function(json) {
+        if (!json.success) { showMsg(json.message || '解绑失败'); return; }
+        showMsg('设备已解绑', true);
+        loadList(); loadStats();
+    }).catch(function(e) { showMsg('请求失败: ' + e.message); });
+}
+
+function editNote(code, currentNote) {
+    var modal = document.getElementById('modalOverlay');
+    var content = document.getElementById('modalContent');
+    content.innerHTML = '<h3>编辑备注 - ' + code + '</h3>' +
+        '<textarea id="noteInput" rows="3" style="width:100%">' + (currentNote || '') + '</textarea>' +
+        '<div class="modal-footer">' +
+        '<button class="ghost" onclick="closeModal()">取消</button>' +
+        '<button onclick="saveNote(\'' + code + '\')">保存</button>' +
+        '</div>';
+    modal.style.display = 'flex';
+}
+
+function saveNote(code) {
+    var note = document.getElementById('noteInput').value.trim().substring(0, 200);
+    api('POST', '/api/admin/note', { code: code, note: note }).then(function(json) {
+        if (!json.success) { showMsg(json.message || '保存失败'); return; }
+        showMsg('备注已保存', true);
+        closeModal(); loadList();
+    }).catch(function(e) { showMsg('请求失败: ' + e.message); });
+}
+
+function closeModal(e) {
+    if (e && e.target !== document.getElementById('modalOverlay')) return;
+    document.getElementById('modalOverlay').style.display = 'none';
+}
+
+function exportCSV() {
+    api('GET', '/api/admin/list?size=10000').then(function(json) {
+        if (!json.success) { showMsg(json.message || '加载失败'); return; }
+        var list = json.cards || [];
+        var csv = '卡密,状态,备注,有效期至,最大设备,已绑设备,使用次数,创建时间\n';
+        list.forEach(function(c) {
+            csv += [c.code, c.status, c.note || '', fmtTime(c.expireAt), c.maxDevices, (c.devices || []).join(';'), c.useCount || 0, fmtTime(c.createdAt)].join(',') + '\n';
+        });
+        download('卡密列表_' + new Date().toISOString().substring(0, 10) + '.csv', csv, 'text/csv;charset=utf-8');
+        showMsg('导出 ' + list.length + ' 条', true);
+    }).catch(function() {});
+}
+
+function exportTXT() {
+    api('GET', '/api/admin/list?size=10000').then(function(json) {
+        if (!json.success) { showMsg(json.message || '加载失败'); return; }
+        var list = json.cards || [];
+        var txt = '卡密号\t状态\t备注\t有效期至\t已绑/最大\n' + '='.repeat(60) + '\n';
+        list.forEach(function(c) {
+            txt += [c.code, c.status, c.note || '', fmtTime(c.expireAt), (c.devices || []).length + '/' + c.maxDevices].join('\t') + '\n';
+        });
+        download('卡密列表_' + new Date().toISOString().substring(0, 10) + '.txt', txt, 'text/plain;charset=utf-8');
+        showMsg('导出 ' + list.length + ' 条', true);
+    }).catch(function() {});
+}
+
+function download(name, content, mime) {
+    var blob = new Blob(['\uFEFF' + content], { type: mime });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a'); a.href = url; a.download = name; a.click();
+    URL.revokeObjectURL(url);
+}
+
+/* ==================== 安全防护 ==================== */
+function loadSecurity() {
+    loadBlacklist();
+    loadWhitelist();
+}
+
+function loadBlacklist() {
+    api('GET', '/api/admin/blacklist').then(function(json) {
+        if (!json.success) return;
+        var bl = json.blacklist;
+        var html = '';
+        if (bl.ips.length === 0) {
+            html = '<div class="empty">暂无黑名单 IP</div>';
+        } else {
+            html = '<table><thead><tr><th>IP</th><th>原因</th><th>操作</th></tr></thead><tbody>';
+            bl.ips.forEach(function(ip) {
+                html += '<tr><td><code>' + ip + '</code></td><td>' + (bl.reason[ip] || '-') + '</td><td><button class="sm danger" onclick="removeBlacklist(\'' + ip + '\')">移除</button></td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        document.getElementById('blacklistTable').innerHTML = html;
+    }).catch(function() {});
+}
+
+function addBlacklist() {
+    var ip = document.getElementById('blIp').value.trim();
+    var reason = document.getElementById('blReason').value.trim();
+    if (!ip) { showMsg('请输入 IP 地址'); return; }
+    api('POST', '/api/admin/blacklist', { ip: ip, reason: reason }).then(function(json) {
+        if (!json.success) { showMsg(json.message || '添加失败'); return; }
+        showMsg('IP ' + ip + ' 已加入黑名单', true);
+        document.getElementById('blIp').value = '';
+        document.getElementById('blReason').value = '';
+        loadBlacklist();
+    }).catch(function() {});
+}
+
+function removeBlacklist(ip) {
+    api('DELETE', '/api/admin/blacklist', { ip: ip }).then(function(json) {
+        if (!json.success) { showMsg(json.message || '移除失败'); return; }
+        showMsg('IP ' + ip + ' 已从黑名单移除', true);
+        loadBlacklist();
+    }).catch(function() {});
+}
+
+function loadWhitelist() {
+    api('GET', '/api/admin/whitelist').then(function(json) {
+        if (!json.success) return;
+        var wl = json.whitelist;
+        document.getElementById('wlEnabled').checked = wl.enabled;
+        var html = '';
+        if (wl.ips.length === 0) {
+            html = '<div class="empty">暂无白名单 IP</div>';
+        } else {
+            html = '<table><thead><tr><th>IP</th><th>操作</th></tr></thead><tbody>';
+            wl.ips.forEach(function(ip) {
+                html += '<tr><td><code>' + ip + '</code></td><td><button class="sm danger" onclick="removeWhitelist(\'' + ip + '\')">移除</button></td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        document.getElementById('whitelistTable').innerHTML = html;
+    }).catch(function() {});
+}
+
+function addWhitelist() {
+    var ip = document.getElementById('wlIp').value.trim();
+    if (!ip) { showMsg('请输入 IP 地址'); return; }
+    api('POST', '/api/admin/whitelist', { ip: ip }).then(function(json) {
+        if (!json.success) { showMsg(json.message || '添加失败'); return; }
+        showMsg('IP ' + ip + ' 已加入白名单', true);
+        document.getElementById('wlIp').value = '';
+        loadWhitelist();
+    }).catch(function() {});
+}
+
+function removeWhitelist(ip) {
+    api('DELETE', '/api/admin/whitelist', { ip: ip }).then(function(json) {
+        if (!json.success) { showMsg(json.message || '移除失败'); return; }
+        showMsg('IP ' + ip + ' 已从白名单移除', true);
+        loadWhitelist();
+    }).catch(function() {});
+}
+
+function toggleWhitelist() {
+    var enabled = document.getElementById('wlEnabled').checked;
+    api('POST', '/api/admin/whitelist', { enabled: enabled }).then(function(json) {
+        if (!json.success) { showMsg(json.message || '操作失败'); return; }
+        showMsg('白名单已' + (enabled ? '启用' : '禁用'), true);
+    }).catch(function() {});
+}
+
+if (token) document.getElementById('adminToken').value = token;
+loadStats(); loadList();
 </script>
 </body>
 </html>
