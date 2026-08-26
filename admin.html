@@ -388,8 +388,8 @@ function loadList() {
             var devicesHtml = '';
             if (c.devices && c.devices.length > 0) {
                 devicesHtml = '<div class="device-list">' + c.devices.map(function(d) {
-                    var fp = c.fingerprints ? (c.fingerprints[d] || '').substring(0, 8) : '';
-                    return '<span class="device-tag" title="指纹: ' + (fp || '未知') + '">' + d.substring(0, 12) + '...<button onclick="unbindDevice(\'' + c.code + '\',\'' + d + '\')" title="解绑">x</button></span>';
+                    var fp = c.fingerprints ? (c.fingerprints[d] || '') : '';
+                    return '<span class="device-tag" style="cursor:pointer" onclick="event.stopPropagation();showDeviceInfo(\'' + c.code + '\',\'' + d + '\',\'' + fp + '\')" title="点击查看详情">' + d.substring(0, 12) + '...<button onclick="event.stopPropagation();unbindDevice(\'' + c.code + '\',\'' + d + '\')" title="解绑" style="margin-left:4px">x</button></span>';
                 }).join('') + '</div>';
             } else {
                 devicesHtml = '<span class="muted">-</span>';
@@ -525,8 +525,8 @@ function doAction(code, action) {
     }).catch(function(e) { showMsg('请求失败: ' + e.message); });
 }
 
-function unbindDevice(code, deviceUuid) {
-    if (!confirm('确认解绑设备 ' + deviceUuid.substring(0, 12) + '...？')) return;
+function unbindDevice(code, deviceUuid, skipConfirm) {
+    if (!skipConfirm && !confirm('确认解绑设备 ' + deviceUuid.substring(0, 12) + '...？')) return;
     api('POST', '/api/admin/unbind', { code: code, device_uuid: deviceUuid }).then(function(json) {
         if (!json.success) { showMsg(json.message || '解绑失败'); return; }
         showMsg('设备已解绑', true);
@@ -558,6 +558,35 @@ function saveNote(code) {
 function closeModal(e) {
     if (e && e.target !== document.getElementById('modalOverlay')) return;
     document.getElementById('modalOverlay').style.display = 'none';
+}
+
+function showDeviceInfo(code, uuid, fingerprint) {
+    var modal = document.getElementById('modalOverlay');
+    var content = document.getElementById('modalContent');
+    content.innerHTML = '<h3>设备详情</h3>' +
+        '<div style="margin-bottom:12px"><strong>卡密:</strong> <code>' + code + '</code></div>' +
+        '<div style="margin-bottom:12px"><strong>设备UUID:</strong> <code style="word-break:break-all">' + uuid + '</code> <button class="sm" onclick="copyText(\'' + uuid + '\',this)">复制</button></div>' +
+        '<div style="margin-bottom:16px"><strong>设备指纹:</strong> <code style="word-break:break-all;font-size:11px">' + (fingerprint || '未记录') + '</code> <button class="sm" onclick="copyText(\'' + fingerprint + '\',this)">复制</button></div>' +
+        '<div class="modal-footer">' +
+        '<button class="ghost" onclick="closeModal()">关闭</button>' +
+        '<button class="sm" style="background:#f53f3f;color:#fff" onclick="closeModal();unbindDevice(\'' + code + '\',\'' + uuid + '\',true)">解绑此设备</button>' +
+        '</div>';
+    modal.style.display = 'flex';
+}
+
+function copyText(text, btn) {
+    if (!text) return;
+    navigator.clipboard.writeText(text).then(function() {
+        btn.textContent = '已复制';
+        setTimeout(function() { btn.textContent = '复制'; }, 2000);
+    }).catch(function() {
+        var ta = document.createElement('textarea');
+        ta.value = text; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+        document.body.appendChild(ta); ta.select();
+        document.execCommand('copy'); document.body.removeChild(ta);
+        btn.textContent = '已复制';
+        setTimeout(function() { btn.textContent = '复制'; }, 2000);
+    });
 }
 
 function exportCSV() {
