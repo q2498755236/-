@@ -1,0 +1,126 @@
+{
+  "debug": false,
+  "logLevel": "info",
+  "vision": {
+    "screenshotQuality": 80,
+    "findTimeout": 5000,
+    "ocrEnabled": true,
+    "ocrLanguage": "ch",
+    "frameHistory": 5,
+    "imageCacheTTL": 60000,
+    "imageCacheSize": 20,
+    "ocrRequired": false,
+    "ocrCpuThreads": 4,
+    "ocrUseSlim": true
+  },
+  "thread": {
+    "maxThreads": 16,
+    "defaultTimeout": 30000,
+    "gcInterval": 30000
+  },
+  "scheduler": {
+    "tickInterval": 100,
+    "maxErrors": 10,
+    "recoveryEnabled": true
+  },
+  "cache": {
+    "maxSize": 200,
+    "defaultTTL": 5000
+  },
+  "action": {
+    "coordinateMode": "screen",
+    "designWidth": 1080,
+    "designHeight": 1920,
+    "clickDelay": [
+      80,
+      180
+    ],
+    "swipeDuration": [
+      300,
+      600
+    ],
+    "longPressDuration": [
+      800,
+      1200
+    ],
+    "randomOffset": 3,
+    "enableRandom": true,
+    "enableRetry": true,
+    "maxRetry": 3,
+    "retryDelay": 150
+  },
+  "condition": {
+    "enableCache": true,
+    "cacheTTL": 1000,
+    "maxCacheSize": 200,
+    "enableParallel": true,
+    "parallelTimeout": 3000
+  },
+  "plugin": {
+    "enabled": true,
+    "directory": "plugins",
+    "autoInit": true,
+    "allowExternalPaths": false
+  },
+  "ui": {
+    "floatyEnabled": true,
+    "monitorEnabled": false,
+    "showFps": false
+  },
+  "gc": {
+    "enable": true,
+    "autoGC": true,
+    "autoGCThreshold": 0.85,
+    "autoGCInterval": 30000,
+    "enableMemoryReport": true,
+    "memoryReportInterval": 60000,
+    "enableLeakDetect": false,
+    "leakCheckInterval": 120000,
+    "enableLog": true
+  },
+  "perf": {
+    "enable": true,
+    "collectInterval": 5000,
+    "enableHistory": true,
+    "maxHistory": 100,
+    "enableBottleneckDetect": true,
+    "bottleneckThreshold": 0.8,
+    "enableAutoExport": false,
+    "exportInterval": 300000
+  },
+  "monitor": {
+    "enable": true,
+    "updateInterval": 1000,
+    "enableCPU": true,
+    "enableMemory": true,
+    "enableFPS": false,
+    "enableBattery": true,
+    "enableThread": true,
+    "enableLog": true,
+    "enableAlert": true,
+    "alertThresholds": {
+      "cpu": 90,
+      "memory": 90,
+      "battery": 10
+    },
+    "alertCooldown": 30000
+  },
+  "replay": {
+    "enable": true,
+    "maxRecords": 10000,
+    "playbackSpeed": 1.0,
+    "loopCount": 1,
+    "enableRandomDelay": false,
+    "randomDelayRange": [
+      0,
+      50
+    ],
+    "enableLog": true
+  },
+  "watchdog": {
+    "enable": true,
+    "checkInterval": 5000,
+    "maxStallTime": 15000,
+    "recoveryEnabled": true
+  }
+}
