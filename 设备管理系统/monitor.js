@@ -43,7 +43,9 @@
  * 数组条件/动作 (loop action, 需配置工具变量: 数组变量名/匹配字段/匹配值/比较字段/
  *   判断条件/比较值/自增字段/步长, 详见 loop 内 case 注释):
  *   条件类-数组字段判断     判断数组内某条目字段是否符合条件, 返回 true/false
- *   动作类-数组字段自增自减 对数组内某条目字段自增/自减并写回, 条目不存在自动新建
+ *   动作类-数组字段自增     对数组内某条目字段自增并写回, 条目不存在自动新建
+ *   动作类-数组字段自减     对数组内某条目字段自减并写回, 条目不存在自动新建
+ *   动作类-数组字段自增自减 兼容旧配置: 步长正数自增/负数自减
  * ================================================================ */
 
 var MON_SERVER = 'https://2498755236.byethost7.com';
@@ -971,6 +973,34 @@ function condCheck(cond, fieldVal, cmpVal) {
     return false;
 }
 
+/* 自增/自减共用实现: inc=true 加, false 减; 步长取绝对值, 条目不存在自动新建 */
+function arrIncDec(actionName, inc) {
+    var aName = auto.getValue('数组变量名') || '';
+    var kField = auto.getValue('匹配字段') || 'name';
+    var mVal = auto.getValue('匹配值') || '';
+    var iField = auto.getValue('自增字段') || 'count';
+    var step = parseInt(auto.getValue('步长') || '1', 10);
+    if (isNaN(step)) step = 1;
+    step = Math.abs(step);
+    var arr = arrRead(aName);
+    if (arr === null) arr = [];
+    var it = arrFind(arr, kField, mVal);
+    if (it === null) {
+        var fresh = {};
+        fresh[kField] = mVal;
+        fresh[iField] = inc ? step : -step;
+        arr.push(fresh);
+        it = fresh;
+    } else {
+        var cur = parseInt(it[iField], 10);
+        if (isNaN(cur)) cur = 0;
+        it[iField] = inc ? cur + step : cur - step;
+    }
+    auto.setValue(aName, JSON.stringify(arr));
+    slog((inc ? '自增' : '自减') + ': ' + mVal + ' 的 ' + iField + ' => ' + it[iField] + ' (步长 ' + step + ')');
+    return it[iField];
+}
+
 function loop(action) {
     try {
         switch (action) {
@@ -998,7 +1028,13 @@ function loop(action) {
                 slog('条件判断: ' + matchVal + ' 的 ' + cmpField + '=' + it[cmpField] + ' ' + cond + ' ' + cmpVal + ' => ' + ok);
                 return ok;
             }
-            /* 动作类: 数组内某条目字段自增/自减步长, 写回原变量; 条目不存在时自动新建 */
+            /* 动作类: 数组内某条目字段自增, 写回原变量; 条目不存在时自动新建 (步长取绝对值, 默认 1) */
+            case '动作类-数组字段自增':
+                return arrIncDec(action, true);
+            /* 动作类: 数组内某条目字段自减, 写回原变量; 条目不存在时自动新建 (步长取绝对值, 默认 1) */
+            case '动作类-数组字段自减':
+                return arrIncDec(action, false);
+            /* 兼容旧动作名: 步长正数自增/负数自减 */
             case '动作类-数组字段自增自减': {
                 var aName = auto.getValue('数组变量名') || '';
                 var kField = auto.getValue('匹配字段') || 'name';
