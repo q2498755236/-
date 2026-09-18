@@ -914,7 +914,7 @@ function monDoAll() {
         try {
             var vr = monFetchVars();
             if (vr !== 'empty') slog('变量同步: ' + vr);
-        } catch (eV) {}
+        } catch (eV) { slog('变量同步异常: ' + (eV && eV.message ? eV.message : eV)); }
     }
     /* 5. 汇总写入结果变量 (单变量, 编辑器只导这一个就能看到全部结果) */
     var lastErr = monRead(MON_LASTERR_FILE, 'mon_last_error') || '';
