@@ -194,15 +194,15 @@ function dbAcc() {
     if ($__accDb instanceof mysqli) return $__accDb;
     if (empty($CFG['ACC_DB_NAME']) || $CFG['ACC_DB_NAME'] === $CFG['DB_NAME']) {
         $__accDb = db();
-        return $__accDb;
+    } else {
+        try {
+            $__accDb = new mysqli($CFG['DB_HOST'], $CFG['DB_USER'], $CFG['DB_PASS'], $CFG['ACC_DB_NAME'], intval($CFG['DB_PORT']));
+        } catch (mysqli_sql_exception $e) {
+            respond(array('success' => false, 'message' => '账号数据库连接失败'), 500);
+        }
+        $__accDb->set_charset('utf8mb4');
     }
-    try {
-        $__accDb = new mysqli($CFG['DB_HOST'], $CFG['DB_USER'], $CFG['DB_PASS'], $CFG['ACC_DB_NAME'], intval($CFG['DB_PORT']));
-    } catch (mysqli_sql_exception $e) {
-        respond(array('success' => false, 'message' => '账号数据库连接失败'), 500);
-    }
-    $__accDb->set_charset('utf8mb4');
-    /* 账号三表 (uuid UNIQUE: 一台设备只能绑一个账号) */
+    /* 账号四表 (回落主库时同样确保存在; uuid UNIQUE: 一台设备只能绑一个账号) */
     $__accDb->query("CREATE TABLE IF NOT EXISTS monitor_users (
         id INT AUTO_INCREMENT PRIMARY KEY,
         username VARCHAR(32) NOT NULL UNIQUE,
@@ -221,6 +221,13 @@ function dbAcc() {
         created_ms BIGINT NOT NULL DEFAULT 0,
         PRIMARY KEY (user_id, uuid),
         UNIQUE KEY uniq_bind_uuid (uuid)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    /* 设备编辑器变量: 固定两组 — 查看变量 (设备上报, 网页只读) + 修改变量 (网页编辑, 下发设备) */
+    $__accDb->query("CREATE TABLE IF NOT EXISTS monitor_vars (
+        uuid VARCHAR(32) PRIMARY KEY,
+        view_var MEDIUMTEXT NOT NULL,
+        edit_var MEDIUMTEXT NOT NULL,
+        updated_ms BIGINT NOT NULL DEFAULT 0
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
     return $__accDb;
 }
@@ -1245,6 +1252,21 @@ function handleMonitorReport($body) {
             report_count=report_count+1, last_seen=VALUES(last_seen)",
         array_merge(array($deviceId), array_values($fields), array(1, $now, $now))
     );
+    /* 编辑器"查看变量"上报: body.viewVar 为原始字符串 (业务脚本 setValue 的内容), 尽力存储, 失败不影响心跳 */
+    $repUuid = strtoupper(strval($fields['uuid']));
+    if (isset($body['viewVar']) && is_string($body['viewVar']) && $repUuid !== '') {
+        $vv = strval($body['viewVar']);
+        if (strlen($vv) <= 65536) {
+            $stV = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var, updated_ms) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE view_var = VALUES(view_var), updated_ms = VALUES(updated_ms)");
+            if ($stV) {
+                $nowV = nowMs();
+                $empty = '';
+                $stV->bind_param('sssi', $repUuid, $vv, $empty, $nowV);
+                $stV->execute();
+                $stV->close();
+            }
+        }
+    }
     /* 状态由客户在网页设置, report 仅回传, upsert 不覆盖 */
     $st = db()->prepare("SELECT status FROM client_status WHERE device_id = ?");
     $st->bind_param('s', $deviceId);
@@ -1770,6 +1792,150 @@ function handleMonitorSetStatus($body) {
     respond(array('success' => true, 'status' => $status));
 }
 
+/* ==================== 设备编辑器变量 (查看变量/修改变量) ==================== */
+/* 认证三模式: 管理员 key (任意设备) / 客户 token (仅绑定设备) / 设备签名 (仅自己, 仅查看) */
+function monVarsAuth($body, $write) {
+    $cip = clientIp();
+    if (isset($body['key']) && strval($body['key']) !== '') {
+        if (adminFailCheck($cip)) respond(array('success' => false, 'message' => '失败次数过多, IP 已被暂时封禁'), 429);
+        if (!monitorAuth(strval($body['key']))) {
+            adminFail($cip);
+            respond(array('success' => false, 'message' => '密钥错误'), 401);
+        }
+        adminFailClear($cip);
+        $uuid = strtoupper(preg_replace('/[^0-9A-Fa-f\-]/', '', strval(isset($body['uuid']) ? $body['uuid'] : '')));
+        if ($uuid === '') respond(array('success' => false, 'message' => '缺少设备 UUID'), 400);
+        return $uuid;
+    }
+    if (isset($body['token']) && strval($body['token']) !== '') {
+        $tk = preg_replace('/[^0-9a-f]/', '', strval($body['token']));
+        $userId = monTokenCheck($tk);
+        if (!$userId) respond(array('success' => false, 'message' => '登录已过期, 请重新登录'), 401);
+        if ($write) monRequireCsrf($tk);
+        $uuid = strtoupper(preg_replace('/[^0-9A-Fa-f\-]/', '', strval(isset($body['uuid']) ? $body['uuid'] : '')));
+        if ($uuid === '') respond(array('success' => false, 'message' => '缺少设备 UUID'), 400);
+        $st = dbAcc()->prepare("SELECT 1 FROM monitor_binds WHERE user_id = ? AND uuid = ?");
+        if (!$st) respond(array('success' => false, 'message' => '查询失败'), 500);
+        $st->bind_param('is', $userId, $uuid);
+        $st->execute();
+        if (!$st->get_result()->fetch_assoc()) {
+            respond(array('success' => false, 'message' => '该设备未绑定在此账号下'), 403);
+        }
+        return $uuid;
+    }
+    if ($write) respond(array('success' => false, 'message' => '修改变量需管理员密钥或客户登录'), 401);
+    /* 设备签名认证: 设备只能查看自己的变量 */
+    $v = monitorVerifySigned($body);
+    $uuid = strtoupper(preg_replace('/[^0-9A-Fa-f\-]/', '', $v['uuid']));
+    if ($uuid === '' || strlen($uuid) > 32) respond(array('success' => false, 'message' => '设备UUID无效'), 400);
+    return $uuid;
+}
+
+function monVarsLoad($uuid) {
+    $st = dbAcc()->prepare("SELECT view_var, edit_var, updated_ms FROM monitor_vars WHERE uuid = ?");
+    if (!$st) return null;
+    $st->bind_param('s', $uuid);
+    $st->execute();
+    $row = $st->get_result()->fetch_assoc();
+    $st->close();
+    return $row;
+}
+
+/* 查看变量组 (只读) + 修改变量组 (网页可编辑) */
+function handleMonitorVars($body) {
+    if (!rateLimit(clientIp(), 60)) respond(array('success' => false, 'message' => '请求过于频繁'));
+    $uuid = monVarsAuth($body, false);
+    $row = monVarsLoad($uuid);
+    respond(array(
+        'success' => true,
+        'uuid' => $uuid,
+        'view' => strval($row ? $row['view_var'] : ''),
+        'edit' => strval($row ? $row['edit_var'] : ''),
+        'updatedMs' => intval($row ? $row['updated_ms'] : 0),
+    ));
+}
+
+/* 修改: 仅写修改变量组 (查看变量组由设备上报, 网页只读); 内容为原始字符串, 64KB 限 */
+function handleMonitorSetVars($body) {
+    if (!rateLimit(clientIp(), 30)) respond(array('success' => false, 'message' => '请求过于频繁'));
+    $uuid = monVarsAuth($body, true);
+    $edit = strval(isset($body['editVar']) ? $body['editVar'] : '');
+    if (strlen($edit) > 65536) respond(array('success' => false, 'message' => '内容超过 64KB 限制'), 400);
+    $st = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var, updated_ms) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE edit_var = VALUES(edit_var), updated_ms = VALUES(updated_ms)");
+    if (!$st) respond(array('success' => false, 'message' => '保存失败'), 500);
+    $empty = '';
+    $now = nowMs();
+    $st->bind_param('sssi', $uuid, $empty, $edit, $now);
+    $st->execute();
+    $st->close();
+    auditLog('变量修改', array('device' => maskId($uuid), 'len' => strlen($edit)));
+    respond(array('success' => true, 'uuid' => $uuid, 'edit' => $edit));
+}
+
+/* 管理员删除设备: 监控密钥认证 (与 setstatus 管理分支同构);
+ * uuid 或 deviceId 任一定位; 级联清理: 客户账号绑定 (账号库) + 卡密 devices/fingerprints + 设备记录 + 缩略图 */
+function handleMonitorDeviceDelete($body) {
+    $cip = clientIp();
+    if (adminFailCheck($cip)) respond(array('success' => false, 'message' => '失败次数过多, IP 已被暂时封禁'), 429);
+    if (!monitorAuth(isset($body['key']) ? strval($body['key']) : '')) {
+        adminFail($cip);
+        respond(array('success' => false, 'message' => '密钥错误'), 401);
+    }
+    adminFailClear($cip);
+    $deviceId = preg_replace('/[^A-Za-z0-9_\-\.]/', '', strval(isset($body['deviceId']) ? $body['deviceId'] : ''));
+    $uuid = strtoupper(preg_replace('/[^0-9A-Fa-f\-]/', '', strval(isset($body['uuid']) ? $body['uuid'] : '')));
+    if ($deviceId === '' && $uuid === '') respond(array('success' => false, 'message' => '需要 deviceId 或 uuid 定位设备'), 400);
+    $where = $deviceId !== '' ? 'device_id = ?' : 'uuid = ?';
+    $keyVal = $deviceId !== '' ? $deviceId : $uuid;
+    $chk = db()->prepare("SELECT uuid FROM client_status WHERE " . $where);
+    if (!$chk) respond(array('success' => false, 'message' => '查询失败'), 500);
+    $chk->bind_param('s', $keyVal);
+    $chk->execute();
+    $row = $chk->get_result()->fetch_assoc();
+    $chk->close();
+    if (!$row) respond(array('success' => false, 'message' => '设备不存在'), 404);
+    $rowUuid = strtoupper(strval($row['uuid']));
+    if ($rowUuid !== '') {
+        /* 1. 客户账号绑定 (独立账号库, 尽力清理) */
+        $stB = dbAcc()->prepare("DELETE FROM monitor_binds WHERE uuid = ?");
+        if ($stB) { $stB->bind_param('s', $rowUuid); $stB->execute(); $stB->close(); }
+        /* 2. 卡密 devices 数组与 fingerprints 键清理 (uuid 已白名单清洗, LIKE 通配符不会出现) */
+        db();
+        $db = $GLOBALS['__db'];
+        $needle = '%' . $rowUuid . '%';
+        $stC = $db->prepare("SELECT code, devices, fingerprints FROM cards WHERE devices LIKE ? OR fingerprints LIKE ?");
+        if ($stC) {
+            $stC->bind_param('ss', $needle, $needle);
+            $stC->execute();
+            $resC = $stC->get_result();
+            $up = $db->prepare("UPDATE cards SET devices = ?, fingerprints = ? WHERE code = ?");
+            while ($crow = $resC->fetch_assoc()) {
+                $devices = json_decode($crow['devices'], true);
+                $fps = json_decode($crow['fingerprints'], true);
+                if (!is_array($devices)) $devices = array();
+                if (!is_array($fps)) $fps = array();
+                $pos = array_search($rowUuid, $devices);
+                if ($pos !== false) array_splice($devices, $pos, 1);
+                if (array_key_exists($rowUuid, $fps)) unset($fps[$rowUuid]);
+                if ($up) {
+                    $nd = json_encode(array_values($devices));
+                    $nf = json_encode($fps ? $fps : new stdClass());
+                    $up->bind_param('sss', $nd, $nf, $crow['code']);
+                    $up->execute();
+                }
+            }
+            $stC->close();
+        }
+        /* 4. 缩略图 (uuid 已清洗, 无路径穿越风险) */
+        @unlink(__DIR__ . '/mon_thumbs/' . $rowUuid . '.jpg');
+    }
+    /* 3. 设备记录 */
+    dbExec("DELETE FROM client_status WHERE " . $where, array($keyVal));
+    backupData();
+    auditLog('设备删除', array('device' => maskId($rowUuid !== '' ? $rowUuid : $keyVal)));
+    respond(array('success' => true));
+}
+
 /* ==================== 路由分发 ==================== */
 $method = $_SERVER['REQUEST_METHOD'];
 $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
@@ -1812,11 +1978,14 @@ if ($method === 'POST' && ($path === '/api/verify' || $path === '/api/heartbeat'
 }
 
 /* ---- 监控接口 ---- */
-if ($path === '/api/monitor/report' || $path === '/api/monitor/list' || $path === '/api/monitor/setstatus' || $path === '/api/monitor/thumb') {
+if ($path === '/api/monitor/report' || $path === '/api/monitor/list' || $path === '/api/monitor/setstatus' || $path === '/api/monitor/thumb' || $path === '/api/monitor/devicedel' || $path === '/api/monitor/vars' || $path === '/api/monitor/setvars') {
     if ($method === 'POST' && $path === '/api/monitor/report') handleMonitorReport($body);
     if ($method === 'GET' && $path === '/api/monitor/list') handleMonitorList($query);
     if ($method === 'POST' && $path === '/api/monitor/setstatus') handleMonitorSetStatus($body);
     if ($method === 'POST' && $path === '/api/monitor/thumb') handleMonitorThumb($body);
+    if ($method === 'POST' && $path === '/api/monitor/devicedel') handleMonitorDeviceDelete($body);
+    if ($method === 'POST' && $path === '/api/monitor/vars') handleMonitorVars($body);
+    if ($method === 'POST' && $path === '/api/monitor/setvars') handleMonitorSetVars($body);
 }
 
 /* ---- 客户账号接口 ---- */

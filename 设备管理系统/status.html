@@ -98,7 +98,54 @@ input::placeholder { color: var(--txt3); }
 .cap-q { height: 100%; display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 15px; color: var(--acid); letter-spacing: .05em; }
 .cap-row input { flex: 1; min-width: 0; height: 44px; }
 .act-row button.unbind { margin-left: auto; }
-.act-row button.unbind:hover { border-color: var(--red); color: var(--red); background: rgba(255,61,90,.08); }
+.act-row button.unbind:hover, .act-row button.del:hover { border-color: var(--red); color: var(--red); background: rgba(255,61,90,.08); }
+.act-row button.del { margin-left: auto; }
+
+/* ============ 确认模态 (与 admin 后台同款, 替代原生 confirm) ============ */
+.modal-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,.75); backdrop-filter: blur(6px);
+    display: flex; align-items: center; justify-content: center; z-index: 1100;
+}
+.modal {
+    background: var(--panel); border: 1px solid var(--line2); border-radius: 4px;
+    padding: 26px; min-width: 360px; max-width: 88vw; max-height: 82vh; overflow-y: auto;
+    box-shadow: 0 30px 90px rgba(0,0,0,.7);
+    animation: modalIn .3s cubic-bezier(.22,1,.36,1);
+}
+@keyframes modalIn { from { opacity: 0; transform: translateY(24px) scale(.97); } }
+.modal h3 { font-size: 15px; margin-bottom: 18px; display: flex; align-items: center; gap: 9px; color: var(--txt); }
+.modal h3 svg { width: 17px; height: 17px; color: var(--acid); }
+.modal h3.danger svg { color: var(--red); }
+.modal-body { font-size: 14px; line-height: 1.7; color: var(--txt2); }
+.modal-footer { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+.modal-footer button { height: 40px; }
+button.solid-red { background: var(--red); border-color: var(--red); color: #fff; }
+button.solid-red:hover { background: #ff5c74; box-shadow: 0 4px 18px rgba(255,61,90,.3); }
+
+/* ============ 设备变量 (查看变量/修改变量) ============ */
+.vars-uuid { font-family: var(--mono); font-size: 11px; color: var(--txt3); margin-left: 10px; letter-spacing: 0; font-weight: 400; }
+.vars-group { margin-bottom: 18px; }
+.vars-title {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .12em; color: var(--acid);
+    margin-bottom: 8px; display: flex; align-items: center; gap: 10px;
+}
+.vars-title .vars-sub { color: var(--txt3); letter-spacing: .02em; font-size: 10px; }
+.vars-title button { height: 24px; padding: 0 12px; font-size: 11px; margin-left: auto; }
+.vars-row {
+    display: flex; justify-content: space-between; align-items: center; gap: 14px;
+    padding: 8px 12px; border: 1px solid var(--line); border-radius: 3px; margin-bottom: 6px;
+    font-size: 13px; background: rgba(255,255,255,.02);
+}
+.vars-row .vr-name { color: var(--txt); }
+.vars-row .vr-count { font-family: var(--mono); color: var(--acid); font-weight: 700; }
+.vars-empty { color: var(--txt3); font-size: 12px; padding: 4px 0; }
+.vars-raw { font-family: var(--mono); font-size: 11px; color: var(--txt2); white-space: pre-wrap; word-break: break-all; padding: 8px 10px; border: 1px solid var(--line); border-radius: 3px; }
+.vars-textarea {
+    width: 100%; min-height: 150px; background: #0d0d12; border: 1px solid var(--line2); border-radius: 3px;
+    color: var(--txt); font-family: var(--mono); font-size: 12px; line-height: 1.6; padding: 10px;
+    box-sizing: border-box; resize: vertical; outline: none;
+}
+.vars-textarea:focus { border-color: var(--acid); }
 .empty-box { grid-column: 1 / -1; text-align: center; padding: 80px 0; color: var(--txt3); }
 .empty-box svg { width: 34px; height: 34px; margin-bottom: 14px; opacity: .5; }
 .empty-box > div:first-of-type { font-family: var(--mono); font-size: 13px; letter-spacing: .18em; color: var(--txt2); }
@@ -367,7 +414,7 @@ button.cur-off { border-color: rgba(255,61,90,.55); color: var(--red); backgroun
             <div class="gate-label c-vio"><i data-lucide="user"></i>CLIENT / 客户登录</div>
             <div class="gate-inputs col">
                 <input type="text" id="accInput" placeholder="用户名 (3-24位字母数字下划线)" autocomplete="off">
-                <input type="password" id="pwdInput" placeholder="密码 (8-32位, 含字母和数字)" autocomplete="off" onkeydown="if(event.key==='Enter')loginAcc('login')">
+                <input type="password" id="pwdInput" placeholder="密码 (8-32位, 含字母和数字)" autocomplete="new-password" onkeydown="if(event.key==='Enter')loginAcc('login')">
                 <div class="cap-row">
                     <div class="cap-box" onclick="loadCaptcha()" title="点击刷新">
                         <img id="capImg" alt="CAPTCHA">
@@ -790,20 +837,28 @@ function renderAll(j) {
     $('emptyBox').style.display = devs.length ? 'none' : '';
     var html = devs.map(devCard).join('');
     $('devGrid').innerHTML = html;
-    /* 管理员: 每卡片注入状态操作行 (按设备实际标记高亮对应按钮) */
+    /* 管理员: 每卡片注入状态操作行 (按设备实际标记高亮对应按钮); 未绑定设备仅给删除按钮 */
     document.querySelectorAll('#devGrid .dev').forEach(function (el, i) {
         var d = devs[i];
-        if (!d || !d.uuid) return;
+        if (!d) return;
+        var row = document.createElement('div');
+        row.className = 'act-row';
+        if (!d.uuid) {
+            row.innerHTML = '<span class="act-label">DEL</span>'
+                + '<button class="del" title="删除设备" onclick="deleteDevice(\'\',\'' + esc(d.device_id) + '\')"><i data-lucide="trash-2"></i></button>';
+            el.appendChild(row);
+            return;
+        }
         var cur = String(d.status || '');
         var clsOk = cur === '' ? ' cur-ok' : '';
         var clsIdle = cur === '挂机' ? ' cur-idle' : '';
         var clsOff = cur === '离线' ? ' cur-off' : '';
-        var row = document.createElement('div');
-        row.className = 'act-row';
         row.innerHTML = '<span class="act-label">SET</span>'
             + '<button class="' + clsOk.trim() + '" onclick="setStatus(\'在线\',\'' + esc(d.uuid) + '\')"><i data-lucide="circle-check"></i>正常</button>'
             + '<button class="' + clsIdle.trim() + '" onclick="setStatus(\'挂机\',\'' + esc(d.uuid) + '\')"><i data-lucide="coffee"></i>挂机</button>'
-            + '<button class="' + clsOff.trim() + '" onclick="setStatus(\'离线\',\'' + esc(d.uuid) + '\')"><i data-lucide="power-off"></i>离线</button>';
+            + '<button class="' + clsOff.trim() + '" onclick="setStatus(\'离线\',\'' + esc(d.uuid) + '\')"><i data-lucide="power-off"></i>离线</button>'
+            + '<button title="设备变量" onclick="openVars(\'' + esc(d.uuid) + '\')"><i data-lucide="braces"></i></button>'
+            + '<button class="del" title="删除设备" onclick="deleteDevice(\'' + esc(d.uuid) + '\',\'\')"><i data-lucide="trash-2"></i></button>';
         el.appendChild(row);
     });
     icons();
@@ -835,10 +890,146 @@ function renderBinds(j) {
             + '<button class="' + clsOk.trim() + '" onclick="setStatus(\'在线\',\'' + esc(d.uuid) + '\')"><i data-lucide="circle-check"></i>正常</button>'
             + '<button class="' + clsIdle.trim() + '" onclick="setStatus(\'挂机\',\'' + esc(d.uuid) + '\')"><i data-lucide="coffee"></i>挂机</button>'
             + '<button class="' + clsOff.trim() + '" onclick="setStatus(\'离线\',\'' + esc(d.uuid) + '\')"><i data-lucide="power-off"></i>离线</button>'
+            + '<button title="设备变量" onclick="openVars(\'' + esc(d.uuid) + '\')"><i data-lucide="braces"></i></button>'
             + '<button class="unbind" onclick="unbindDevice(\'' + esc(d.uuid) + '\')"><i data-lucide="link-2-off"></i>解绑</button>';
         el.appendChild(row);
     });
     icons();
+}
+
+/* ============ 设备变量 (查看变量/修改变量) ============ */
+var VARS_UUID = '', VARS_VIEW = '', VARS_EDIT = '';
+
+function varsRows(text) {
+    /* [{"name":..,"count":..}] 每条一行; 解析失败显示原文 */
+    if (!text || !String(text).trim()) return '<div class="vars-empty">暂无数据</div>';
+    try {
+        var arr = JSON.parse(String(text));
+        if (!Array.isArray(arr) || arr.length === 0) return '<div class="vars-empty">暂无数据</div>';
+        return arr.map(function (it) {
+            if (typeof it !== 'object' || it === null) {
+                return '<div class="vars-row"><span class="vr-name">' + esc(String(it)) + '</span><span class="vr-count"></span></div>';
+            }
+            var n = String(it.name === undefined ? '' : it.name);
+            var c = (it.count === undefined || it.count === null) ? '' : String(it.count);
+            return '<div class="vars-row"><span class="vr-name">' + esc(n) + '</span><span class="vr-count">' + esc(c) + '</span></div>';
+        }).join('');
+    } catch (e) {
+        return '<div class="vars-raw">' + esc(String(text)) + '</div>';
+    }
+}
+
+function openVars(uuid) {
+    VARS_UUID = uuid;
+    var content = document.getElementById('modalContent');
+    content.innerHTML = '<h3><i data-lucide="braces"></i>设备变量<span class="vars-uuid">' + esc(uuid) + '</span></h3>'
+        + '<div class="modal-body">加载中...</div>';
+    document.getElementById('modalOverlay').style.display = 'flex';
+    icons();
+    var payload = { uuid: uuid };
+    if (ACC_MODE) payload.token = localStorage.getItem('monitor_token') || '';
+    else payload.key = KEY;
+    fetch('/api/monitor/vars', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    }).then(function (r) {
+        if (r.status === 401 && ACC_MODE) { accExpired(); return null; }
+        return r.json();
+    }).then(function (j) {
+        if (!j) return;
+        if (!j.success) { toast(j.message || '读取失败', false); closeModal(); return; }
+        VARS_VIEW = String(j.view || '');
+        VARS_EDIT = String(j.edit || '');
+        renderVarsModal();
+    }).catch(function () { toast('读取失败, 请重试', false); closeModal(); });
+}
+
+function renderVarsModal() {
+    var content = document.getElementById('modalContent');
+    content.innerHTML = '<h3><i data-lucide="braces"></i>设备变量<span class="vars-uuid">' + esc(VARS_UUID) + '</span></h3>'
+        + '<div class="vars-group"><div class="vars-title">查看变量 <span class="vars-sub">设备上报 · 只读</span></div>'
+        + '<div>' + varsRows(VARS_VIEW) + '</div></div>'
+        + '<div class="vars-group"><div class="vars-title">修改变量 <span class="vars-sub">保存后设备心跳拉取生效</span>'
+        + '<button class="ghost" onclick="editVarsForm()">编辑</button></div>'
+        + '<div id="editArea">' + varsRows(VARS_EDIT) + '</div></div>'
+        + '<div class="modal-footer"><button class="ghost" onclick="closeModal()">关闭</button></div>';
+    icons();
+}
+
+function editVarsForm() {
+    var area = document.getElementById('editArea');
+    area.innerHTML = '<textarea class="vars-textarea" id="varsTa" spellcheck="false">' + esc(VARS_EDIT) + '</textarea>'
+        + '<div class="modal-footer"><button class="ghost" onclick="renderVarsModal()">取消</button>'
+        + '<button onclick="saveVars()">保存</button></div>';
+    icons();
+}
+
+function saveVars() {
+    var ta = document.getElementById('varsTa');
+    var text = String(ta ? ta.value : '');
+    if (text.trim() !== '') {
+        try { JSON.parse(text); } catch (e) { toast('JSON 格式错误, 请检查后保存', false); return; }
+    }
+    var payload = { uuid: VARS_UUID, editVar: text };
+    var hdrs = { 'Content-Type': 'application/json' };
+    if (ACC_MODE) {
+        payload.token = localStorage.getItem('monitor_token') || '';
+        hdrs['X-CSRF-Token'] = localStorage.getItem('monitor_csrf') || '';
+    } else {
+        payload.key = KEY;
+    }
+    fetch('/api/monitor/setvars', {
+        method: 'POST',
+        headers: hdrs,
+        body: JSON.stringify(payload)
+    }).then(function (r) {
+        if (r.status === 401 && ACC_MODE) { accExpired(); return null; }
+        return r.json();
+    }).then(function (j) {
+        if (!j) return;
+        if (!j.success) { toast(j.message || '保存失败', false); return; }
+        VARS_EDIT = String(j.edit || '');
+        toast('修改变量已保存, 设备下个心跳生效', true);
+        renderVarsModal();
+    }).catch(function () { toast('保存失败, 请重试', false); });
+}
+
+/* 自定义确认模态 (与 admin 后台同款, 替代原生 confirm) */
+function confirmModal(msg, onYes, danger) {
+    var content = document.getElementById('modalContent');
+    content.innerHTML = '<h3 class="' + (danger ? 'danger' : '') + '"><i data-lucide="alert-triangle"></i>操作确认</h3>'
+        + '<div class="modal-body">' + msg + '</div>'
+        + '<div class="modal-footer">'
+        + '<button class="ghost" onclick="closeModal()">取消</button>'
+        + '<button class="' + (danger ? 'solid-red' : '') + '" id="cfmYes">确认执行</button></div>';
+    document.getElementById('modalOverlay').style.display = 'flex';
+    icons();
+    document.getElementById('cfmYes').onclick = function() { closeModal(); onYes(); };
+}
+
+function closeModal(e) {
+    if (e && e.target !== document.getElementById('modalOverlay')) return;
+    document.getElementById('modalOverlay').style.display = 'none';
+}
+
+/* 管理员删除设备 (仅管理员视图入口): uuid 或 deviceId 定位, 级联清理绑定与缩略图, 不可恢复 */
+function deleteDevice(uuid, deviceId) {
+    var label = uuid || deviceId || '';
+    if (!label) return;
+    confirmModal('确定删除设备 <b style="color:var(--red)">' + esc(label) + '</b> ?<br>将同时清除其卡密绑定与客户绑定, 此操作不可恢复。', function () {
+        var payload = { key: KEY };
+        if (uuid) payload.uuid = uuid; else payload.deviceId = deviceId;
+        fetch('/api/monitor/devicedel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        }).then(function (r) { return r.json(); }).then(function (j) {
+            if (!j.success) { toast(j.message || '删除失败', false); return; }
+            toast('设备已删除', true);
+            refresh();
+        }).catch(function () { toast('删除失败, 请重试', false); });
+    }, true);
 }
 
 /* 状态设置 (客户模式: uuid 自证; 管理员模式: 携带监控密钥) */
@@ -928,6 +1119,20 @@ function fmtScreen(v) {
     }
     loadCaptcha();   /* 登录门显示时预加载验证码 */
 })();
+
+/* 刷新/恢复时清空账密输入框 (防浏览器表单快照与已存密码自动填充残留) */
+window.addEventListener('pageshow', function () {
+    var p = document.getElementById('pwdInput');
+    var a = document.getElementById('accInput');
+    if (p) p.value = '';
+    if (a) a.value = '';
+});
+window.addEventListener('beforeunload', function () {
+    var p = document.getElementById('pwdInput');
+    var a = document.getElementById('accInput');
+    if (p) p.value = '';
+    if (a) a.value = '';
+});
 icons();
 </script>
 <!-- 灯箱 (点击缩略图放大) -->
@@ -943,6 +1148,9 @@ icons();
         <span id="lbTime"></span>
         <button class="lb-refresh" onclick="refreshLightbox()"><i data-lucide="refresh-cw"></i>REFRESH</button>
     </div>
+</div>
+<div class="modal-overlay" id="modalOverlay" style="display:none" onclick="closeModal(event)">
+    <div class="modal" id="modalContent"></div>
 </div>
 </body>
 </html>

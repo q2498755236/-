@@ -586,7 +586,9 @@ function monPostReport() {
         gold: num('金币'),
         hp: num('血量'),
         floor: num('层数'),
-        round: num('轮数')
+        round: num('轮数'),
+        /* 编辑器"查看变量"随心跳上报 (网页端只读展示) */
+        viewVar: gv('查看变量').slice(0, 65536)
     };
     try {
         payload.model = String(device.model || '');
@@ -599,6 +601,38 @@ function monPostReport() {
     /* 两参数形式, 与卡密插件 v2.js 真机验证过的用法一致 */
     var res = http.postJson(MON_SERVER + '/api/monitor/report', payload);
     return typeof res === 'string' ? res : (res && res.body) || JSON.stringify(res);
+}
+
+/* 拉取服务端变量 (网页端"修改变量"组的内容), 非空则写回编辑器变量 '修改变量' 供业务脚本读取 */
+function monFetchVars() {
+    var nowSec = Math.floor(Date.now() / 1000);
+    var ident = monEnsureIdentity();
+    var seed = _monSeed();
+    var nonce = _genNonce();
+    var totp = _totp(seed, nowSec);
+    var signParams = 'deviceId=' + ident[0] + '&uuid=' + ident[1] +
+                     '&nonce=' + nonce + '&timestamp=' + nowSec + '&totp=' + totp;
+    var sign = _hmacSha256(signParams, totp + seed);
+    try { http.addHeader('User-Agent', MON_UA); } catch (e0) {}
+    var res = http.postJson(MON_SERVER + '/api/monitor/vars', {
+        deviceId: ident[0],
+        uuid: ident[1],
+        timestamp: nowSec,
+        nonce: nonce,
+        totp: totp,
+        sign: sign
+    });
+    var body = typeof res === 'string' ? res : (res && res.body) || '';
+    try {
+        var j = JSON.parse(String(body));
+        if (j && j.success) {
+            var edit = String(j.edit || '');
+            if (edit === '') return 'empty';
+            sv('修改变量', edit);
+            return 'ok:' + edit.length + 'B';
+        }
+        return 'fail:' + String((j && j.message) || '').slice(0, 60);
+    } catch (e) { return 'parse-fail'; }
 }
 
 /* ==================== 缩略图 (截屏->缩放->imwrite->shell base64->上传) ====================
@@ -864,6 +898,11 @@ function monDoAll() {
             }
         } catch (e2) {}
         monMaybeThumb(firstCall);
+        /* 拉取网页端修改的变量并写回编辑器 (业务脚本 auto.getValue('修改变量') 使用) */
+        try {
+            var vr = monFetchVars();
+            if (vr !== 'empty') slog('变量同步: ' + vr);
+        } catch (eV) {}
     }
     /* 5. 汇总写入结果变量 (单变量, 编辑器只导这一个就能看到全部结果) */
     var lastErr = monRead(MON_LASTERR_FILE, 'mon_last_error') || '';
