@@ -1005,15 +1005,22 @@ function loop(action) {
     try {
         switch (action) {
             case '动作类-监控上报':
-            /* 旧动作名兼容, 新配置统一用 动作类-监控上报 */
+                monDoAll();
+                break;
             case '动作类-上报运行状态':
+                monDoAll();
+                break;
             case '动作类-累计任务执行':
+                monDoAll();
+                break;
             case '动作类-记录运行错误':
+                monDoAll();
+                break;
             case '动作类-重置监控计数':
                 monDoAll();
                 break;
             /* 条件类: 判断数组内某条目字段是否符合条件, 返回 true/false
-             * case 名用双引号 + return 直接跟表达式 (与 v2.js 编辑器识别范式一致) */
+             * 范式对齐时间段插件: case 双引号 + 块内单一 return 在末尾 + 失败路径不提前 return */
             case "条件类-数组字段判断": {
                 var varName = auto.getValue('数组变量名') || '';
                 var keyField = auto.getValue('匹配字段') || 'name';
@@ -1021,19 +1028,29 @@ function loop(action) {
                 var cmpField = auto.getValue('比较字段') || 'count';
                 var cond = auto.getValue('判断条件') || '等于';
                 var cmpVal = auto.getValue('比较值') || '';
+                var res = false;
                 var arr = arrRead(varName);
-                if (arr === null) { slog('数组为空或解析失败: ' + varName); return false; }
-                var it = arrFind(arr, keyField, matchVal);
-                if (it === null) { slog('未找到条目: ' + keyField + '=' + matchVal); return false; }
-                slog('条件判断: ' + matchVal + ' 的 ' + cmpField + '=' + it[cmpField] + ' ' + cond + ' ' + cmpVal);
-                return condCheck(cond, it[cmpField], cmpVal);
+                if (arr === null) {
+                    slog('数组为空或解析失败: ' + varName);
+                } else {
+                    var it = arrFind(arr, keyField, matchVal);
+                    if (it === null) {
+                        slog('未找到条目: ' + keyField + '=' + matchVal);
+                    } else {
+                        res = condCheck(cond, it[cmpField], cmpVal);
+                    }
+                }
+                slog('条件判断: ' + matchVal + ' 的 ' + cmpField + '=' + cond + ' ' + cmpVal + ' => ' + res);
+                return res;
             }
             /* 动作类: 数组内某条目字段自增, 写回原变量; 条目不存在时自动新建 (步长取绝对值, 默认 1) */
-            case "动作类-数组字段自增":
+            case "动作类-数组字段自增": {
                 return arrIncDec(action, true);
+            }
             /* 动作类: 数组内某条目字段自减, 写回原变量; 条目不存在时自动新建 (步长取绝对值, 默认 1) */
-            case "动作类-数组字段自减":
+            case "动作类-数组字段自减": {
                 return arrIncDec(action, false);
+            }
             /* 兼容旧动作名: 步长正数自增/负数自减 */
             case "动作类-数组字段自增自减": {
                 var aName = auto.getValue('数组变量名') || '';
