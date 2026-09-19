@@ -1012,8 +1012,9 @@ function loop(action) {
             case '动作类-重置监控计数':
                 monDoAll();
                 break;
-            /* 条件类: 判断数组内某条目字段是否符合条件, 返回 true/false */
-            case '条件类-数组字段判断': {
+            /* 条件类: 判断数组内某条目字段是否符合条件, 返回 true/false
+             * case 名用双引号 + return 直接跟表达式 (与 v2.js 编辑器识别范式一致) */
+            case "条件类-数组字段判断": {
                 var varName = auto.getValue('数组变量名') || '';
                 var keyField = auto.getValue('匹配字段') || 'name';
                 var matchVal = auto.getValue('匹配值') || '';
@@ -1024,18 +1025,17 @@ function loop(action) {
                 if (arr === null) { slog('数组为空或解析失败: ' + varName); return false; }
                 var it = arrFind(arr, keyField, matchVal);
                 if (it === null) { slog('未找到条目: ' + keyField + '=' + matchVal); return false; }
-                var ok = condCheck(cond, it[cmpField], cmpVal);
-                slog('条件判断: ' + matchVal + ' 的 ' + cmpField + '=' + it[cmpField] + ' ' + cond + ' ' + cmpVal + ' => ' + ok);
-                return ok;
+                slog('条件判断: ' + matchVal + ' 的 ' + cmpField + '=' + it[cmpField] + ' ' + cond + ' ' + cmpVal);
+                return condCheck(cond, it[cmpField], cmpVal);
             }
             /* 动作类: 数组内某条目字段自增, 写回原变量; 条目不存在时自动新建 (步长取绝对值, 默认 1) */
-            case '动作类-数组字段自增':
+            case "动作类-数组字段自增":
                 return arrIncDec(action, true);
             /* 动作类: 数组内某条目字段自减, 写回原变量; 条目不存在时自动新建 (步长取绝对值, 默认 1) */
-            case '动作类-数组字段自减':
+            case "动作类-数组字段自减":
                 return arrIncDec(action, false);
             /* 兼容旧动作名: 步长正数自增/负数自减 */
-            case '动作类-数组字段自增自减': {
+            case "动作类-数组字段自增自减": {
                 var aName = auto.getValue('数组变量名') || '';
                 var kField = auto.getValue('匹配字段') || 'name';
                 var mVal = auto.getValue('匹配值') || '';
