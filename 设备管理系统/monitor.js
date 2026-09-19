@@ -1062,11 +1062,12 @@ function loop(action) {
             }
             default:
                 slog('未知功能: ' + action);
-                break;
+                return false;
         }
     } catch (err) {
         slog('插件执行异常: ' + (err && err.message ? err.message : err));
         try { auto.setValue('mon_last_error', String(err && err.message ? err.message : err).slice(0, 240)); } catch (e2) {}
+        return false;
     }
 }
 
