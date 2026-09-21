@@ -45,6 +45,13 @@ Entries discovered by the Agent during task execution should follow this format:
 - Instructions:
   - 每次进入 thinking 标签时，必须以"好了，我现在要用全局视角来思考这个问题"作为开头
 
+[分析故障原因永远不考虑旧版]
+- Date: 2026-09-19
+- Context: 排查网页变量显示问题时，模型反复把"客户端是旧版/未更新"列为怀疑方向，用户明确纠正
+- Instructions:
+  - 分析问题原因时永远不考虑"旧版本/未更新/需要重新部署"这类因素
+  - 默认线上和设备端跑的都是最新代码，从代码逻辑、数据链路、配置正确性找原因
+
 [Project Knowledge Summary]
 - Date: 2026-09-17
 - Context: Discovered by Agent while performing 卡密服务端部署到 ByetHost 并迁移 MySQL
@@ -79,4 +86,32 @@ Entries discovered by the Agent during task execution should follow this format:
   - .htaccess 路由核心：RewriteCond !-f !-d + RewriteRule ^ index.php [QSA,L]（非真实文件统一进 index.php 内部路由）；改 .htaccess 前先备份线上原版
   - 线上 carddata 状态目录回退在站内 htdocs/carddata/state/（站点外目录不可写），HTTP 已被 .htaccess 拦截（carddata 403）；FTP 清理状态文件用"上传临时 PHP 脚本→curl 触发→脚本自删"模式
   - 管理员防爆破 (admin_fail 3 次锁 30 分钟) 会把测试脚本负向用例计入失败：连续跑多轮 test_client 可能触发 429 封禁，需 FTP 清 carddata/state/admin_fail.json 后重测
-  - 线上 REMOTE_ADDR 直传真实公网 IP（XFF 同值），免费主机偶发 http=0 超时属正常抖动，重跑即可
+
+[Project Knowledge Summary]
+- Date: 2026-09-19
+- Context: Discovered by Agent while 集成数组条件插件到 monitor.js, 编辑器"添加条件"按钮一直灰
+- Category: Environment Configuration
+- Instructions:
+  - 自动化编辑器识别插件"条件类"功能的硬性要求：loop() 的 default 分支和 catch 分支都必须 return false（所有执行路径有布尔兜底返回），否则整个插件被判定无功能，"添加条件"按钮灰、所有 case 都归入动作列表
+  - 编辑器插件 case 范式（与 v2.js/时间段插件对齐）：case 名用双引号（case "条件类-xxx"），条件类 return 直接跟表达式调用（return condCheck(...)），动作类 return 字符串/数据（编辑器要求动作返回数据，undefined 会报"未返回数据"）
+   - monitor.js 单文件集成多类 case：监控动作类（无 return 也被编辑器接受）、数组条件/动作类，新增功能时保持上述范式
+   - 线上 REMOTE_ADDR 直传真实公网 IP（XFF 同值），免费主机偶发 http=0 超时属正常抖动，重跑即可
+
+[Project Knowledge Summary]
+- Date: 2026-09-19
+- Context: Discovered by Agent while 排查设备端"查看变量"出现无法清除的 probe 脏值
+- Category: Troubleshooting & Debugging
+- Instructions:
+  - 编辑器工具变量的值可能持久化脏数据（在变量面板清空、保存后一运行又恢复旧值），常规清空重置无效
+  - 有效手段：删除该变量后新建同名变量，脏值随之消失
+  - 排查此类问题时先区分三层来源：JS 代码写入点（rg 全部 setValue 调用）、编辑器原生层任务配置恢复、变量存储脏数据；前两层排除后再考虑第三层
+  - 编辑器 auto.setValue/auto.getValue 在部分周期存在读写不可靠（写入失败被吞异常、跨周期读不到），跨事件持久化数据优先用文件存储（/sdcard 目录 + 回读验证），参考 monitor.js 的 monWrite/monRead
+[Project Knowledge Summary]
+- Date: 2026-09-21
+- Context: OCR插件 native 授权算法验证（license.cpp 手写 SHA1/SHA256/HMAC/TOTP）
+- Category: Build Methods
+- Instructions:
+  - 主机对拍 C++ 算法：sed 切出 license.cpp 算法段（1-252 行，删 191-197 的 j2s 与 jni/log include），追加 harness main() 用 g++ 编译，与 Python hmac/hashlib 输出逐行 diff
+  - 对拍覆盖：TOTP(counter)、请求签名(key=totp+salt+SECRET)、响应验签(key=hex(HMAC-SHA256("response_salt_v2", code+SECRET)) 二次 HMAC)、SHA1/SHA256 已知向量("abc")
+  - 手写 HMAC 传 key 长度必须 strlen 字面量核对（曾因写死 15 截断 "response_salt_v2"(16B) 导致验签必败）
+  - license.cpp 时钟用 CLOCK_REALTIME 对齐 Unix 毫秒时间戳（nativeSetSession 的 deadline）

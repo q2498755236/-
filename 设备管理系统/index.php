@@ -222,13 +222,19 @@ function dbAcc() {
         PRIMARY KEY (user_id, uuid),
         UNIQUE KEY uniq_bind_uuid (uuid)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
-    /* 设备编辑器变量: 固定两组 — 查看变量 (设备上报, 网页只读) + 修改变量 (网页编辑, 下发设备) */
+    /* 设备编辑器变量: 三组 — 查看变量 (设备上报, 网页只读) + 修改变量内容 (设备上报, 网页在此基础上修改下发)
+     * + 下发暂存 (网页保存, 设备心跳拉取) */
     $__accDb->query("CREATE TABLE IF NOT EXISTS monitor_vars (
         uuid VARCHAR(32) PRIMARY KEY,
         view_var MEDIUMTEXT NOT NULL,
+        edit_var_dev MEDIUMTEXT NOT NULL,
         edit_var MEDIUMTEXT NOT NULL,
         updated_ms BIGINT NOT NULL DEFAULT 0
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    /* 存量表补列 (幂等) */
+    $__rV = $__accDb->query("SELECT 1 FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'monitor_vars' AND COLUMN_NAME = 'edit_var_dev'");
+    if ($__rV && !$__rV->fetch_assoc()) $__accDb->query("ALTER TABLE monitor_vars ADD COLUMN edit_var_dev MEDIUMTEXT NOT NULL AFTER view_var");
     return $__accDb;
 }
 
@@ -301,6 +307,7 @@ function dbInitSchema() {
         'hp'             => "ALTER TABLE client_status ADD COLUMN hp BIGINT NOT NULL DEFAULT 0",
         'floor'          => "ALTER TABLE client_status ADD COLUMN floor INT NOT NULL DEFAULT 0",
         'round'          => "ALTER TABLE client_status ADD COLUMN round INT NOT NULL DEFAULT 0",
+        'reset_cmd'      => "ALTER TABLE client_status ADD COLUMN reset_cmd TINYINT NOT NULL DEFAULT 0",
     );
     foreach ($__newCols as $__col => $__ddl) {
         $__r = $db->query("SELECT 1 FROM information_schema.COLUMNS
@@ -623,7 +630,18 @@ function rateLimit($ip, $limit) {
             $map[$ip] = array('start' => $now, 'count' => 0);
         }
         $map[$ip]['count']++;
-        if (count($map) > $CFG['MAX_RATE_CACHE']) $map = array($ip => $map[$ip]);
+        /* 超容量时按窗口过期时间逐个清理 (保留仍在窗口内的计数, 防止单 IP 刷爆 map 使他人限流失效) */
+        if (count($map) > $CFG['MAX_RATE_CACHE']) {
+            foreach ($map as $k => $v) {
+                if ($k !== $ip && (!is_array($v) || $now - $v['start'] >= 1000)) unset($map[$k]);
+            }
+            /* 清理后仍超容量: 保留当前 IP 与计数最大的窗口, 丢弃其余 */
+            if (count($map) > $CFG['MAX_RATE_CACHE']) {
+                uasort($map, function ($a, $b) { return $b['count'] - $a['count']; });
+                $map = array_slice($map, 0, $CFG['MAX_RATE_CACHE'], true);
+                if (!isset($map[$ip])) $map[$ip] = array('start' => $now, 'count' => 1);
+            }
+        }
         saveState('rate', $map);
         return $map[$ip]['count'] <= $limit;
     });
@@ -671,7 +689,11 @@ function checkCard($code, $uuidCipher, $fingerprint) {
     $db = db();
     $db->begin_transaction();
     try {
-        $row = $db->query("SELECT * FROM cards WHERE code = '" . $db->real_escape_string($code) . "' FOR UPDATE")->fetch_assoc();
+        $st = $db->prepare("SELECT * FROM cards WHERE code = ? FOR UPDATE");
+        $st->bind_param('s', $code);
+        $st->execute();
+        $row = $st->get_result()->fetch_assoc();
+        $st->close();
         if (!$row) { $db->rollback(); return array('ok' => false, 'reason' => '卡密不存在'); }
         $card = dbRowToCard($row);
         $origExpireAt = $card['expireAt'];
@@ -1252,15 +1274,25 @@ function handleMonitorReport($body) {
             report_count=report_count+1, last_seen=VALUES(last_seen)",
         array_merge(array($deviceId), array_values($fields), array(1, $now, $now))
     );
-    /* 编辑器"查看变量"上报: body.viewVar 为原始字符串 (业务脚本 setValue 的内容), 尽力存储, 失败不影响心跳 */
+    /* 编辑器"查看变量"+"修改变量内容"上报: 均为设备原始字符串, 尽力存储, 失败不影响心跳;
+     * 修改变量内容 (editVarDev) 是网页可修改项的数据来源, 下发暂存 (edit_var) 不被上报覆盖;
+     * 旧客户端未带 editVarDev 字段时仅更新查看变量 (保留已存修改变量内容) */
     $repUuid = strtoupper(strval($fields['uuid']));
-    if (isset($body['viewVar']) && is_string($body['viewVar']) && $repUuid !== '') {
-        $vv = strval($body['viewVar']);
-        if (strlen($vv) <= 65536) {
+    if ($repUuid !== '' && (isset($body['viewVar']) || isset($body['editVarDev']))) {
+        $vv = isset($body['viewVar']) && is_string($body['viewVar']) ? strval($body['viewVar']) : '';
+        $dv = isset($body['editVarDev']) && is_string($body['editVarDev']) ? strval($body['editVarDev']) : null;
+        $nowV = nowMs();
+        $empty = '';
+        if ($dv !== null && strlen($vv) <= 65536 && strlen($dv) <= 65536) {
+            $stV = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, updated_ms) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE view_var = VALUES(view_var), edit_var_dev = VALUES(edit_var_dev), updated_ms = VALUES(updated_ms)");
+            if ($stV) {
+                $stV->bind_param('ssssi', $repUuid, $vv, $dv, $empty, $nowV);
+                $stV->execute();
+                $stV->close();
+            }
+        } elseif ($dv === null && strlen($vv) <= 65536) {
             $stV = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var, updated_ms) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE view_var = VALUES(view_var), updated_ms = VALUES(updated_ms)");
             if ($stV) {
-                $nowV = nowMs();
-                $empty = '';
                 $stV->bind_param('sssi', $repUuid, $vv, $empty, $nowV);
                 $stV->execute();
                 $stV->close();
@@ -1268,12 +1300,30 @@ function handleMonitorReport($body) {
         }
     }
     /* 状态由客户在网页设置, report 仅回传, upsert 不覆盖 */
-    $st = db()->prepare("SELECT status FROM client_status WHERE device_id = ?");
+    $st = db()->prepare("SELECT status, reset_cmd FROM client_status WHERE device_id = ?");
     $st->bind_param('s', $deviceId);
     $st->execute();
     $row = $st->get_result()->fetch_assoc();
     $st->close();
-    respond(array('success' => true, 'timestamp' => intval($now / 1000), 'status' => strval($row['status'])));
+    /* 清零指令: 置位后随下一次心跳下发, 下发即消费清零 (设备端收到后归零本地计数, 下次心跳上报 0) */
+    $resetCmd = !empty($row['reset_cmd']);
+    if ($resetCmd) dbExec("UPDATE client_status SET reset_cmd = 0 WHERE device_id = ?", array($deviceId));
+    respond(array('success' => true, 'timestamp' => intval($now / 1000), 'status' => strval($row['status']), 'resetCmd' => $resetCmd));
+}
+
+/* 管理端: 下发任务/错误计数清零指令 (全部设备置位 reset_cmd, 设备心跳领取后本地归零并回传 0) */
+function handleMonitorClearCounts($body) {
+    global $CFG;
+    $cip = clientIp();
+    if (adminFailCheck($cip)) respond(array('success' => false, 'message' => '失败次数过多, IP 已被暂时封禁'), 429);
+    if (!monitorAuth(isset($body['key']) ? $body['key'] : '')) {
+        adminFail($cip);
+        respond(array('success' => false, 'message' => '密钥错误'), 401);
+    }
+    adminFailClear($cip);
+    $n = dbExec("UPDATE client_status SET reset_cmd = 1", array());
+    auditLog('监控计数清零指令', array('devices' => intval($n)));
+    respond(array('success' => true, 'message' => '清零指令已下发, 等待设备心跳应用', 'devices' => intval($n)));
 }
 
 /* 缩略图上传: 复用 TOTP 验签; 覆盖式存储 mon_thumbs/{uuid}.jpg;
@@ -1832,7 +1882,7 @@ function monVarsAuth($body, $write) {
 }
 
 function monVarsLoad($uuid) {
-    $st = dbAcc()->prepare("SELECT view_var, edit_var, updated_ms FROM monitor_vars WHERE uuid = ?");
+    $st = dbAcc()->prepare("SELECT view_var, edit_var_dev, edit_var, updated_ms FROM monitor_vars WHERE uuid = ?");
     if (!$st) return null;
     $st->bind_param('s', $uuid);
     $st->execute();
@@ -1841,7 +1891,7 @@ function monVarsLoad($uuid) {
     return $row;
 }
 
-/* 查看变量组 (只读) + 修改变量组 (网页可编辑) */
+/* 查看变量组 (只读) + 修改变量内容组 (设备上报, 网页在此基础上修改) + 下发暂存 (网页保存, 设备拉取) */
 function handleMonitorVars($body) {
     if (!rateLimit(clientIp(), 60)) respond(array('success' => false, 'message' => '请求过于频繁'));
     $uuid = monVarsAuth($body, false);
@@ -1850,22 +1900,28 @@ function handleMonitorVars($body) {
         'success' => true,
         'uuid' => $uuid,
         'view' => strval($row ? $row['view_var'] : ''),
+        'devEdit' => strval(isset($row['edit_var_dev']) ? $row['edit_var_dev'] : ''),
         'edit' => strval($row ? $row['edit_var'] : ''),
         'updatedMs' => intval($row ? $row['updated_ms'] : 0),
     ));
 }
 
-/* 修改: 仅写修改变量组 (查看变量组由设备上报, 网页只读); 内容为原始字符串, 64KB 限 */
+/* 修改: 仅写下发暂存 (查看变量/修改变量内容组由设备上报, 网页只读); 内容为原始字符串, 64KB 限;
+ * 前置: 设备上报过修改变量内容 (edit_var_dev 非空) 才允许修改下发 */
 function handleMonitorSetVars($body) {
     if (!rateLimit(clientIp(), 30)) respond(array('success' => false, 'message' => '请求过于频繁'));
     $uuid = monVarsAuth($body, true);
+    $row = monVarsLoad($uuid);
+    if (!$row || trim(strval(isset($row['edit_var_dev']) ? $row['edit_var_dev'] : '')) === '') {
+        respond(array('success' => false, 'message' => '设备尚未上报修改变量内容, 暂不可修改'), 400);
+    }
     $edit = strval(isset($body['editVar']) ? $body['editVar'] : '');
     if (strlen($edit) > 65536) respond(array('success' => false, 'message' => '内容超过 64KB 限制'), 400);
-    $st = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var, updated_ms) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE edit_var = VALUES(edit_var), updated_ms = VALUES(updated_ms)");
+    $st = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, updated_ms) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE edit_var = VALUES(edit_var), updated_ms = VALUES(updated_ms)");
     if (!$st) respond(array('success' => false, 'message' => '保存失败'), 500);
     $empty = '';
     $now = nowMs();
-    $st->bind_param('sssi', $uuid, $empty, $edit, $now);
+    $st->bind_param('ssssi', $uuid, $empty, $empty, $edit, $now);
     $st->execute();
     $st->close();
     auditLog('变量修改', array('device' => maskId($uuid), 'len' => strlen($edit)));
@@ -1978,7 +2034,7 @@ if ($method === 'POST' && ($path === '/api/verify' || $path === '/api/heartbeat'
 }
 
 /* ---- 监控接口 ---- */
-if ($path === '/api/monitor/report' || $path === '/api/monitor/list' || $path === '/api/monitor/setstatus' || $path === '/api/monitor/thumb' || $path === '/api/monitor/devicedel' || $path === '/api/monitor/vars' || $path === '/api/monitor/setvars') {
+if ($path === '/api/monitor/report' || $path === '/api/monitor/list' || $path === '/api/monitor/setstatus' || $path === '/api/monitor/thumb' || $path === '/api/monitor/devicedel' || $path === '/api/monitor/vars' || $path === '/api/monitor/setvars' || $path === '/api/monitor/clearcounts') {
     if ($method === 'POST' && $path === '/api/monitor/report') handleMonitorReport($body);
     if ($method === 'GET' && $path === '/api/monitor/list') handleMonitorList($query);
     if ($method === 'POST' && $path === '/api/monitor/setstatus') handleMonitorSetStatus($body);
@@ -1986,6 +2042,7 @@ if ($path === '/api/monitor/report' || $path === '/api/monitor/list' || $path ==
     if ($method === 'POST' && $path === '/api/monitor/devicedel') handleMonitorDeviceDelete($body);
     if ($method === 'POST' && $path === '/api/monitor/vars') handleMonitorVars($body);
     if ($method === 'POST' && $path === '/api/monitor/setvars') handleMonitorSetVars($body);
+    if ($method === 'POST' && $path === '/api/monitor/clearcounts') handleMonitorClearCounts($body);
 }
 
 /* ---- 客户账号接口 ---- */

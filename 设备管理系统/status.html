@@ -138,6 +138,12 @@ button.solid-red:hover { background: #ff5c74; box-shadow: 0 4px 18px rgba(255,61
 }
 .vars-row .vr-name { color: var(--txt); }
 .vars-row .vr-count { font-family: var(--mono); color: var(--acid); font-weight: 700; }
+.vars-row .vr-input {
+    width: 110px; height: 26px; background: #0d0d12; border: 1px solid var(--line2); border-radius: 3px;
+    color: var(--acid); font-family: var(--mono); font-size: 12px; font-weight: 700;
+    padding: 0 8px; box-sizing: border-box; outline: none; text-align: right;
+}
+.vars-row .vr-input:focus { border-color: var(--acid); }
 .vars-empty { color: var(--txt3); font-size: 12px; padding: 4px 0; }
 .vars-raw { font-family: var(--mono); font-size: 11px; color: var(--txt2); white-space: pre-wrap; word-break: break-all; padding: 8px 10px; border: 1px solid var(--line); border-radius: 3px; }
 .vars-textarea {
@@ -221,6 +227,29 @@ header.topbar {
     transform-origin: left; transition: transform .4s cubic-bezier(.22,1,.36,1);
 }
 .stat-card:hover::after { transform: scaleX(1); }
+.stat-card.clk { cursor: pointer; }
+.stat-card.clk:active { transform: translateY(-2px); }
+/* 统计明细面板: 卡片点击展开对应 uuid 列表 */
+.stat-panel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
+    padding: 12px 16px; margin-bottom: 18px;
+}
+.stat-panel .sp-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.stat-panel .sp-title { font-family: var(--mono); font-size: 11px; letter-spacing: .15em; color: var(--txt2); }
+.stat-panel .sp-clear {
+    margin-left: auto; background: transparent; border: 1px solid var(--line2); color: var(--txt2);
+    font-family: var(--mono); font-size: 10px; letter-spacing: .1em; padding: 4px 10px;
+    border-radius: 3px; cursor: pointer; display: flex; align-items: center; gap: 5px;
+}
+.stat-panel .sp-clear:hover { color: var(--red); border-color: var(--red); }
+.stat-panel .sp-row {
+    display: flex; align-items: center; gap: 12px; padding: 5px 2px;
+    font-family: var(--mono); font-size: 11px; border-top: 1px solid var(--line);
+}
+.stat-panel .sp-row:first-of-type { border-top: none; }
+.stat-panel .sp-uuid { color: var(--txt); }
+.stat-panel .sp-name { color: var(--txt2); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stat-panel .sp-val { color: var(--acid); font-weight: 700; }
 .c-acid { color: var(--acid); } .c-grn { color: var(--grn); } .c-red { color: var(--red); }
 .c-org { color: var(--org); } .c-vio { color: var(--vio); } .c-cyan { color: var(--cyan); } .c-dim { color: var(--txt2); }
 
@@ -458,12 +487,13 @@ button.cur-off { border-color: rgba(255,61,90,.55); color: var(--red); backgroun
     </header>
 
     <div class="stats" id="statsBar">
-        <div class="stat-card" style="--sc:var(--grn)"><div class="num c-grn" id="stOn">-</div><div class="lbl">ONLINE 在线</div></div>
-        <div class="stat-card" style="--sc:var(--red)"><div class="num c-red" id="stOff">-</div><div class="lbl">OFFLINE 离线</div></div>
-        <div class="stat-card" style="--sc:var(--org)"><div class="num c-org" id="stLowBat">-</div><div class="lbl">LOW BATT 低电量</div></div>
-        <div class="stat-card" style="--sc:var(--acid)"><div class="num c-acid" id="stTasks">-</div><div class="lbl">TASKS 任务总数</div></div>
-        <div class="stat-card" style="--sc:var(--vio)"><div class="num c-vio" id="stErrors">-</div><div class="lbl">ERRORS 错误总数</div></div>
+        <div class="stat-card clk" style="--sc:var(--grn)" onclick="toggleStat('on')"><div class="num c-grn" id="stOn">-</div><div class="lbl">ONLINE 在线</div></div>
+        <div class="stat-card clk" style="--sc:var(--red)" onclick="toggleStat('off')"><div class="num c-red" id="stOff">-</div><div class="lbl">OFFLINE 离线</div></div>
+        <div class="stat-card clk" style="--sc:var(--org)" onclick="toggleStat('lowbat')"><div class="num c-org" id="stLowBat">-</div><div class="lbl">LOW BATT 低电量</div></div>
+        <div class="stat-card clk" style="--sc:var(--acid)" onclick="toggleStat('tasks')"><div class="num c-acid" id="stTasks">-</div><div class="lbl">TASKS 任务总数</div></div>
+        <div class="stat-card clk" style="--sc:var(--vio)" onclick="toggleStat('errors')"><div class="num c-vio" id="stErrors">-</div><div class="lbl">ERRORS 错误总数</div></div>
     </div>
+    <div id="statPanel" style="display:none"></div>
 
     <div class="toolbar" id="adminBar" style="display:none;margin-bottom:16px">
         <span class="muted" id="lastFetch" style="font-family:var(--mono);font-size:11px;letter-spacing:.08em"></span>
@@ -635,16 +665,17 @@ function bindDevice() {
 function unbindDevice(uuid) {
     var tk = localStorage.getItem('monitor_token') || '';
     if (!tk) return;
-    if (!confirm('确定解绑设备 ' + uuid + ' ?')) return;
-    fetch('/api/monu/unbind', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': localStorage.getItem('monitor_csrf') || '' },
-        body: JSON.stringify({ token: tk, uuid: uuid })
-    }).then(function (r) { return r.json(); }).then(function (j) {
-        if (!j.success) { toast(j.message || '解绑失败', false); return; }
-        toast('设备已解绑', true);
-        refresh();
-    }).catch(function () { toast('解绑失败, 请重试', false); });
+    confirmModal('确定解绑设备 ' + esc(uuid) + ' ? 该设备的客户将无法再查看它。', function () {
+        fetch('/api/monu/unbind', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': localStorage.getItem('monitor_csrf') || '' },
+            body: JSON.stringify({ token: tk, uuid: uuid })
+        }).then(function (r) { return r.json(); }).then(function (j) {
+            if (!j.success) { toast(j.message || '解绑失败', false); return; }
+            toast('设备已解绑', true);
+            refresh();
+        }).catch(function () { toast('解绑失败, 请重试', false); });
+    }, true);
 }
 
 function logout() {
@@ -822,7 +853,10 @@ function renderAll(j) {
     window.__lastDevs = devs;   /* 灯箱查设备名用 */
     var on = 0, off = 0, tasks = 0, errors = 0, lowBat = 0;
     devs.forEach(function (d) {
-        if (d.online) on++; else off++;
+        /* 在线/离线按客户标记分类: 正常(含无标记)=在线组, 离线=离线组, 挂机两组都不进 */
+        var st = String(d.status || '');
+        if (st === '离线') off++;
+        else if (st !== '挂机') on++;
         tasks += parseInt(d.task_count || 0, 10);
         errors += parseInt(d.error_count || 0, 10);
         var b = parseInt(d.battery, 10);
@@ -833,6 +867,7 @@ function renderAll(j) {
     $('stLowBat').textContent = lowBat;
     $('stTasks').textContent = tasks;
     $('stErrors').textContent = errors;
+    if (curStatKind) renderStatPanel(curStatKind);
     $('lastFetch').textContent = 'SYNC ' + new Date().toLocaleTimeString() + ' / 服务器 ' + new Date((j.serverTime || 0) * 1000).toLocaleTimeString();
     $('emptyBox').style.display = devs.length ? 'none' : '';
     var html = devs.map(devCard).join('');
@@ -862,6 +897,71 @@ function renderAll(j) {
         el.appendChild(row);
     });
     icons();
+}
+
+/* ============ 统计明细面板: 点击卡片列出对应 uuid ============ */
+var curStatKind = '';
+var STAT_TITLES = { on: 'ONLINE 在线设备', off: 'OFFLINE 离线设备', lowbat: 'LOW BATT 低电量设备', tasks: 'TASKS 各设备任务数', errors: 'ERRORS 各设备错误数' };
+function toggleStat(kind) {
+    if (curStatKind === kind) { closeStatPanel(); return; }
+    curStatKind = kind;
+    renderStatPanel(kind);
+}
+function closeStatPanel() {
+    curStatKind = '';
+    $('statPanel').style.display = 'none';
+    $('statPanel').innerHTML = '';
+}
+function renderStatPanel(kind) {
+    var devs = window.__lastDevs || [];
+    var rows = [];
+    if (kind === 'on' || kind === 'off') {
+        devs.forEach(function (d) {
+            var st = String(d.status || '');
+            var inGroup = kind === 'on' ? (st !== '离线' && st !== '挂机') : (st === '离线');
+            if (inGroup) rows.push({
+                u: d.uuid, n: d.brand + ' ' + d.model,
+                v: (d.online ? '心跳在线' : '心跳断') + ' / ' + (st === '' ? '无标记' : st)
+            });
+        });
+    } else if (kind === 'lowbat') {
+        devs.forEach(function (d) {
+            var b = parseInt(d.battery, 10);
+            if (d.online && !isNaN(b) && b >= 0 && b <= 100 && b < 20) rows.push({ u: d.uuid, n: d.brand + ' ' + d.model, v: b + '%' + (d.status ? ' / 已标记:' + d.status : '') });
+        });
+    } else {
+        var key = kind === 'tasks' ? 'task_count' : 'error_count';
+        devs.forEach(function (d) { rows.push({ u: d.uuid, n: d.brand + ' ' + d.model, v: parseInt(d[key] || 0, 10) }); });
+        rows.sort(function (a, b) { return b.v - a.v; });
+    }
+    var html = '<div class="stat-panel"><div class="sp-head"><span class="sp-title">' + STAT_TITLES[kind] + ' (' + rows.length + ')</span>'
+        + ((kind === 'tasks' || kind === 'errors') && !ACC_MODE
+            ? '<button class="sp-clear" onclick="clearCounts()"><i data-lucide="eraser"></i>清空(下发指令)</button>' : '')
+        + '</div>';
+    if (rows.length === 0) {
+        html += '<div class="sp-row"><span class="sp-name">无</span></div>';
+    } else {
+        rows.forEach(function (r) {
+            html += '<div class="sp-row"><span class="sp-uuid">' + esc(r.u || '(无uuid)') + '</span><span class="sp-name">' + esc(r.n) + '</span><span class="sp-val">' + esc(String(r.v)) + '</span></div>';
+        });
+    }
+    html += '</div>';
+    var p = $('statPanel');
+    p.innerHTML = html;
+    p.style.display = '';
+    icons();
+}
+/* 管理员清空任务/错误计数: 服务端置位 reset_cmd, 设备心跳领取后本地归零并回传 0 */
+function clearCounts() {
+    confirmModal('下发清零指令后, 所有设备将在下一次心跳时归零任务/错误计数。继续?', function () {
+        fetch('/api/monitor/clearcounts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key: KEY })
+        }).then(function (r) { return r.json(); }).then(function (j) {
+            toast(j.message || (j.success ? '清零指令已下发' : '下发失败'), !!j.success);
+        }).catch(function (e) { toast('下发失败: ' + e.message, false); });
+    }, true);
 }
 
 /* 客户视图: 仅自己的设备 */
@@ -898,7 +998,7 @@ function renderBinds(j) {
 }
 
 /* ============ 设备变量 (查看变量/修改变量) ============ */
-var VARS_UUID = '', VARS_VIEW = '', VARS_EDIT = '';
+var VARS_UUID = '', VARS_VIEW = '', VARS_EDIT = '', VARS_DEV = '';
 
 function varsRows(text) {
     /* [{"name":..,"count":..}] 每条一行; 解析失败显示原文 */
@@ -940,36 +1040,122 @@ function openVars(uuid) {
         if (!j) return;
         if (!j.success) { toast(j.message || '读取失败', false); closeModal(); return; }
         VARS_VIEW = String(j.view || '');
+        VARS_DEV = String(j.devEdit || '');
         VARS_EDIT = String(j.edit || '');
         renderVarsModal();
     }).catch(function () { toast('读取失败, 请重试', false); closeModal(); });
 }
 
 function renderVarsModal() {
+    var hasDev = String(VARS_DEV).trim() !== '';
+    var pending = hasDev && String(VARS_EDIT).trim() !== '' && VARS_EDIT !== VARS_DEV;
     var content = document.getElementById('modalContent');
     content.innerHTML = '<h3><i data-lucide="braces"></i>设备变量<span class="vars-uuid">' + esc(VARS_UUID) + '</span></h3>'
         + '<div class="vars-group"><div class="vars-title">查看变量 <span class="vars-sub">设备上报 · 只读</span></div>'
         + '<div>' + varsRows(VARS_VIEW) + '</div></div>'
-        + '<div class="vars-group"><div class="vars-title">修改变量 <span class="vars-sub">保存后设备心跳拉取生效</span>'
-        + '<button class="ghost" onclick="editVarsForm()">编辑</button></div>'
-        + '<div id="editArea">' + varsRows(VARS_EDIT) + '</div></div>'
+        + '<div class="vars-group"><div class="vars-title">修改变量 <span class="vars-sub">设备上报 · 可修改下发</span>'
+        + (hasDev ? '<button class="ghost" onclick="editVarsForm()">编辑</button>' : '')
+        + '</div>'
+        + (hasDev
+            ? '<div id="editArea">' + varsRows(VARS_DEV) + (pending ? '<div class="vars-sub">有已下发内容待设备心跳应用</div>' : '') + '</div>'
+            : '<div class="vars-sub">设备尚未上报修改变量内容, 暂不可修改</div>')
+        + '</div>'
         + '<div class="modal-footer"><button class="ghost" onclick="closeModal()">关闭</button></div>';
     icons();
 }
 
+var VARS_EDIT_ARR = null;   /* 表单编辑模式缓存原始条目 (null = 非数组原文 textarea 模式) */
+
 function editVarsForm() {
+    /* 编辑初始值: 上次下发内容优先, 未下发过则以设备上报的修改变量内容为底稿 */
+    var init = String(VARS_EDIT).trim() !== '' ? VARS_EDIT : VARS_DEV;
+    var parsed = null;
+    try { var p = JSON.parse(init); if (Array.isArray(p)) parsed = p; } catch (e) {}
     var area = document.getElementById('editArea');
-    area.innerHTML = '<textarea class="vars-textarea" id="varsTa" spellcheck="false">' + esc(VARS_EDIT) + '</textarea>'
-        + '<div class="modal-footer"><button class="ghost" onclick="renderVarsModal()">取消</button>'
-        + '<button onclick="saveVars()">保存</button></div>';
+    if (parsed === null) {
+        /* 非数组 JSON: 保持原文编辑 */
+        VARS_EDIT_ARR = null;
+        area.innerHTML = '<textarea class="vars-textarea" id="varsTa" spellcheck="false">' + esc(init) + '</textarea>'
+            + '<div class="modal-footer"><button class="ghost" onclick="renderVarsModal()">取消</button>'
+            + '<button onclick="saveVars()">保存</button></div>';
+    } else {
+        /* 数组: 与查看变量同行样式, name 只读, 仅 count 值可改; "上次修改"行只读 */
+        VARS_EDIT_ARR = parsed;
+        var rows = parsed.map(function (it, i) {
+            if (typeof it !== 'object' || it === null) {
+                return '<div class="vars-row"><span class="vr-name">' + esc(String(it)) + '</span><span class="vr-count"></span></div>';
+            }
+            var n = String(it.name === undefined ? '' : it.name);
+            var c = (it.count === undefined || it.count === null) ? '' : String(it.count);
+            if (n === '上次修改') {
+                return '<div class="vars-row"><span class="vr-name">' + esc(n) + '</span><span class="vr-count">' + esc(c) + '</span></div>';
+            }
+            return '<div class="vars-row"><span class="vr-name">' + esc(n) + '</span>'
+                + '<input class="vr-input" data-idx="' + i + '" value="' + esc(c) + '" inputmode="decimal" spellcheck="false"></div>';
+        }).join('');
+        area.innerHTML = rows
+            + '<div class="modal-footer"><button class="ghost" onclick="renderVarsModal()">取消</button>'
+            + '<button onclick="saveVars()">保存</button></div>';
+    }
     icons();
 }
 
+function stampNow() {
+    var now = new Date();
+    var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+    return now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate())
+        + ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds());
+}
+
+/* 数组内容自动维护"上次修改"时间戳条目 (设备端靠它防重复应用) */
+function stampApply(arr) {
+    var found = false;
+    for (var i = 0; i < arr.length; i++) {
+        if (arr[i] && typeof arr[i] === 'object' && String(arr[i].name) === '上次修改') {
+            arr[i].count = stampNow();
+            found = true;
+            break;
+        }
+    }
+    if (!found) arr.push({ name: '上次修改', count: stampNow() });
+}
+
 function saveVars() {
-    var ta = document.getElementById('varsTa');
-    var text = String(ta ? ta.value : '');
-    if (text.trim() !== '') {
-        try { JSON.parse(text); } catch (e) { toast('JSON 格式错误, 请检查后保存', false); return; }
+    var text;
+    if (VARS_EDIT_ARR !== null) {
+        /* 表单模式: 收集 count 输入框写回原条目 (name 等其他字段原样保留) */
+        var inputs = document.querySelectorAll('#editArea .vr-input');
+        for (var k = 0; k < inputs.length; k++) {
+            var idx = parseInt(inputs[k].getAttribute('data-idx'), 10);
+            var it = VARS_EDIT_ARR[idx];
+            if (!it || typeof it !== 'object') continue;
+            var raw = String(inputs[k].value).trim();
+            var num = Number(raw);
+            it.count = (raw !== '' && !isNaN(num)) ? num : raw;
+        }
+        stampApply(VARS_EDIT_ARR);
+        text = JSON.stringify(VARS_EDIT_ARR);
+    } else {
+        var ta = document.getElementById('varsTa');
+        text = String(ta ? ta.value : '');
+        if (text.trim() !== '') {
+            var parsed = null, isJson = true;
+            try { parsed = JSON.parse(text); } catch (e) { isJson = false; }
+            /* 常见手误兜底: 全角标点(，：""｛｝［］)自动转半角后重试 */
+            if (!isJson && /[，：""''｛｝［］]/.test(text)) {
+                var fixed = text.replace(/，/g, ',').replace(/：/g, ':')
+                    .replace(/“|”/g, '"').replace(/‘|’/g, "'")
+                    .replace(/｛/g, '{').replace(/｝/g, '}')
+                    .replace(/［/g, '[').replace(/］/g, ']');
+                try { parsed = JSON.parse(fixed); isJson = true; text = fixed; toast('已自动修正全角标点', true); } catch (e2) {}
+            }
+            if (!isJson) { toast('JSON 格式错误, 请检查后保存', false); return; }
+            /* 数组内容自动维护"上次修改"时间戳条目; 其他 JSON 原样保存 */
+            if (Array.isArray(parsed)) {
+                stampApply(parsed);
+                text = JSON.stringify(parsed);
+            }
+        }
     }
     var payload = { uuid: VARS_UUID, editVar: text };
     var hdrs = { 'Content-Type': 'application/json' };

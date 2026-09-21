@@ -36,16 +36,25 @@
  * 业务脚本用 auto.getValue('状态') 判断, 如 == '挂机' 暂停业务, == '离线' 结束任务。
  *
  * 编辑器变量同步 (内置, 随心跳自动执行, 无需配置 action):
- *   上报: auto 变量 '查看变量' 的内容随心跳上传, 状态页设备卡片只读展示
- *   下发: 状态页"修改变量"保存后, 设备下个心跳写入 auto 变量 '修改变量',
- *         业务脚本 auto.getValue('修改变量') 读取 (内容如 [{"name":"李四","count":4},...])
+ *   上报: '查看变量' 随心跳上传 (状态页只读展示); '修改变量' 的内容作为
+ *         修改变量内容随心跳上传 (状态页可修改项的数据来源, 为空则网页不可修改)
+ *   下发: 状态页"修改变量"保存后, 设备下个心跳拉取: 数组内容比对"上次修改"时间戳
+ *         应用到数据源变量 (心跳内立即生效, 无需数组条件/动作触发);
+ *         非数组内容直写 '修改变量' (业务脚本 auto.getValue 读取)
  *
- * 数组条件/动作 (loop action, 需配置工具变量: 数组变量名/匹配字段/匹配值/比较字段/
+ * 数组条件/动作 (loop action, 工具变量: 修改变量/匹配字段/匹配值/比较字段/
  *   判断条件/比较值/自增字段/步长, 详见 loop 内 case 注释):
+ *   修改变量    直接放数组 JSON 内容 (推荐, 读写/上报/下发应用全走它自己);
+ *               或填目标变量名字符串 (如 测试2), 插件自动识别 ([ 开头=内容, 否则=变量名;
+ *               未配置/为空时兜底 '修改变量' 自己, 保证下发内容总有落地目标)
  *   条件类-数组字段判断     判断数组内某条目字段是否符合条件, 返回 true/false
  *   动作类-数组字段自增     对数组内某条目字段自增并写回, 条目不存在自动新建
  *   动作类-数组字段自减     对数组内某条目字段自减并写回, 条目不存在自动新建
  *   动作类-数组字段自增自减 兼容旧配置: 步长正数自增/负数自减
+ *   服务端同步闭环 (自动, 无需业务脚本桥接):
+ *     '查看变量' 完全归业务脚本管理, 插件不覆盖;
+ *     下发内容心跳内应用 (靠内容里的 {"name":"上次修改","count":时间戳}
+ *     条目比对防重复; 服务端每次修改需更新该时间戳)
  * ================================================================ */
 
 var MON_SERVER = 'https://2498755236.byethost7.com';
@@ -81,6 +90,7 @@ var MON_TASK_FILE = MON_DIR + '/task_count.dat';     /* 兜底变量: mon_task_c
 var MON_ERR_FILE = MON_DIR + '/error_count.dat';     /* 兜底变量: mon_error_count */
 var MON_LASTERR_FILE = MON_DIR + '/last_error.dat';  /* 兜底变量: mon_last_error */
 var MON_LASTREP_FILE = MON_DIR + '/last_report.dat'; /* 兜底变量: mon_last_report */
+var MON_PENDING_FILE = MON_DIR + '/edit_pending.dat'; /* 服务端下发暂存 (文件, auto 变量在部分周期读写不可靠) */
 var MON_THUMB_LAST_FILE = MON_DIR + '/last_thumb.dat'; /* 兜底变量: mon_last_thumb */
 var MON_THUMB_FILE = MON_DIR + '/t.jpg';             /* 缩略图临时文件 */
 
@@ -572,6 +582,14 @@ function monPostReport() {
     var signParams = 'deviceId=' + ident[0] + '&uuid=' + ident[1] +
                      '&nonce=' + nonce + '&timestamp=' + nowSec + '&totp=' + totp;
     var sign = _hmacSha256(signParams, totp + seed);
+    /* 上报修改变量内容: '修改变量'(或其指向变量)的内容 (网页可修改项的数据来源, 为空则网页不可修改) */
+    var arrName = arrResolveName();
+    var devEdit = '';
+    if (arrName !== '') {
+        var arrRaw = auto.getValue(arrName);
+        if (arrRaw !== undefined && arrRaw !== null) devEdit = String(arrRaw);
+    }
+    slog('上报: 修改变量=' + (arrName === '' ? '(未配置)' : arrName) + ' 修改变量内容=' + (devEdit === '' ? '(空)' : devEdit.length + 'B'));
     var payload = {
         deviceId: ident[0],
         uuid: ident[1],
@@ -599,8 +617,10 @@ function monPostReport() {
         hp: num('血量'),
         floor: num('层数'),
         round: num('轮数'),
-        /* 编辑器"查看变量"随心跳上报 (网页端只读展示) */
-        viewVar: gv('查看变量').slice(0, 65536)
+        /* 查看变量随心跳上报 (网页只读展示) */
+        viewVar: gv('查看变量').slice(0, 65536),
+        /* 修改变量内容随心跳上报 (网页可修改项的数据来源) */
+        editVarDev: devEdit.slice(0, 65536)
     };
     try {
         payload.model = String(device.model || '');
@@ -640,6 +660,16 @@ function monFetchVars() {
         if (j && j.success) {
             var edit = String(j.edit || '');
             if (edit === '') return 'empty';
+            /* 数组 JSON 写暂存 mon_edit_pending, 由数组插件比对"上次修改"时间戳后应用
+             * (防心跳反复拉取覆盖本地自增); 非数组内容照旧直写 '修改变量' (业务脚本自用约定) */
+            var isArr = false;
+            try { if (Array.isArray(JSON.parse(edit))) isArr = true; } catch (e1) {}
+            if (isArr) {
+                if (!monWrite(MON_PENDING_FILE, 'mon_edit_pending', edit)) slog('暂存写入失败: edit_pending.dat');
+                /* 心跳内立即应用 (比对"上次修改"时间戳), 不依赖数组条件/动作的执行时机 */
+                try { arrApplyServerEdit(arrResolveName()); } catch (eA) { slog('下发应用异常: ' + (eA && eA.message ? eA.message : eA)); }
+                return 'pending:' + edit.length + 'B';
+            }
             sv('修改变量', edit);
             return 'ok:' + edit.length + 'B';
         }
@@ -896,6 +926,11 @@ function monDoAll() {
         parts.push('心跳跳过');
     } else {
         if (firstCall) slog('首次调用: 强制心跳+截图');
+        /* 先拉取并应用网页下发 (数组内容比对"上次修改"时间戳后写回), 再上报, 本周期即带上新值 */
+        try {
+            var vr = monFetchVars();
+            if (vr !== 'empty') slog('变量同步: ' + vr);
+        } catch (eV) { slog('变量同步异常: ' + (eV && eV.message ? eV.message : eV)); }
         var resp = monPostReport();
         var ok = String(resp).indexOf('"success":true') >= 0;
         monWrite(MON_LASTREP_FILE, 'mon_last_report', String(now));
@@ -910,11 +945,6 @@ function monDoAll() {
             }
         } catch (e2) {}
         monMaybeThumb(firstCall);
-        /* 拉取网页端修改的变量并写回编辑器 (业务脚本 auto.getValue('修改变量') 使用) */
-        try {
-            var vr = monFetchVars();
-            if (vr !== 'empty') slog('变量同步: ' + vr);
-        } catch (eV) { slog('变量同步异常: ' + (eV && eV.message ? eV.message : eV)); }
     }
     /* 5. 汇总写入结果变量 (单变量, 编辑器只导这一个就能看到全部结果) */
     var lastErr = monRead(MON_LASTERR_FILE, 'mon_last_error') || '';
@@ -924,8 +954,9 @@ function monDoAll() {
 }
 
 /* ==================== 数组变量条件/动作 (集成) ====================
- * 需要在编辑器里配置的工具变量 (auto.getValue 读取):
- *   数组变量名  要读写的数组变量, 如 人物配置
+ * 工具变量 (auto.getValue 读取):
+ *   修改变量    直接放数组 JSON 内容 (推荐, 读写/上报/下发应用全走它自己);
+ *               或填目标变量名字符串 (如 测试2), [ 开头识别为内容, 否则识别为变量名
  *   匹配字段    按哪个字段定位条目, 默认 name
  *   匹配值      条目匹配值, 如 张三
  *   比较字段    条件类: 要比较的字段, 默认 count
@@ -935,8 +966,56 @@ function monDoAll() {
  *   步长        动作类: 正数自增/负数自减, 默认 1
  * 数据格式: [{"name":"李四","count":4},{"name":"张三","count":2}] */
 
+/* 解析数组数据源: '修改变量' 的值是 [ 开头的 JSON 时直接以该变量为数据源,
+ * 否则视为目标变量名; 未配置/为空时兜底落回 '修改变量' 自己 (保证下发内容总有落地目标) */
+function arrResolveName() {
+    var v = auto.getValue('修改变量');
+    var s = v === undefined || v === null ? '' : String(v).trim();
+    if (s.charAt(0) === '[') return '修改变量';
+    return s === '' ? '修改变量' : s;
+}
+
+/* 应用服务端下发: mon_edit_pending 暂存内容 (monFetchVars 写入) 为数组 JSON 时写入数据源变量。
+ * 防重复约定: 下发内容携带 {"name":"上次修改","count":时间戳} 条目,
+ * 与数组中同名条目的 count 比对, 一致说明已应用过则跳过;
+ * 应用后清暂存 (心跳反复拉取同样内容不会覆盖本地自增修改) */
+function arrApplyServerEdit(varName) {
+    var edit = monRead(MON_PENDING_FILE, 'mon_edit_pending');
+    if (String(edit).trim() === '') return;
+    edit = String(edit);
+    var fresh = null;
+    try {
+        var parsed = JSON.parse(edit);
+        if (Array.isArray(parsed)) fresh = parsed;
+    } catch (e0) {}
+    if (fresh === null) { monWrite(MON_PENDING_FILE, 'mon_edit_pending', ''); return; }
+    var stampNew = arrFind(fresh, 'name', '上次修改');
+    var cur = null;
+    var raw = auto.getValue(varName);
+    if (raw !== undefined && raw !== null && String(raw).trim() !== '') {
+        try {
+            var parsedCur = JSON.parse(String(raw));
+            if (Array.isArray(parsedCur)) cur = parsedCur;
+        } catch (e1) {}
+    }
+    if (cur !== null) {
+        var stampCur = arrFind(cur, 'name', '上次修改');
+        if (stampNew !== null && stampCur !== null &&
+            String(stampNew.count) === String(stampCur.count)) {
+            monWrite(MON_PENDING_FILE, 'mon_edit_pending', '');
+            return;
+        }
+    }
+    auto.setValue(varName, edit);
+    monWrite(MON_PENDING_FILE, 'mon_edit_pending', '');
+    var chk = gv(varName);
+    slog('已应用服务端下发变量: ' + varName + ' (' + edit.length + 'B, 上次修改=' + (stampNew ? stampNew.count : '无') +
+         (chk === edit ? ')' : ') 写入校验失败, 回读=' + (chk === '' ? '(空)' : chk.length + 'B')));
+}
+
 /* 安全读取并解析数组变量: 返回数组, 失败/为空返回 null */
 function arrRead(varName) {
+    arrApplyServerEdit(varName);
     var raw = auto.getValue(varName);
     if (raw === undefined || raw === null || String(raw).trim() === '') return null;
     try {
@@ -975,7 +1054,7 @@ function condCheck(cond, fieldVal, cmpVal) {
 
 /* 自增/自减共用实现: inc=true 加, false 减; 步长取绝对值, 条目不存在自动新建 */
 function arrIncDec(actionName, inc) {
-    var aName = auto.getValue('数组变量名') || '';
+    var aName = arrResolveName();
     var kField = auto.getValue('匹配字段') || 'name';
     var mVal = auto.getValue('匹配值') || '';
     var iField = auto.getValue('自增字段') || 'count';
@@ -1022,7 +1101,7 @@ function loop(action) {
             /* 条件类: 判断数组内某条目字段是否符合条件, 返回 true/false
              * 范式对齐时间段插件: case 双引号 + 块内单一 return 在末尾 + 失败路径不提前 return */
             case "条件类-数组字段判断": {
-                var varName = auto.getValue('数组变量名') || '';
+                var varName = arrResolveName();
                 var keyField = auto.getValue('匹配字段') || 'name';
                 var matchVal = auto.getValue('匹配值') || '';
                 var cmpField = auto.getValue('比较字段') || 'count';
@@ -1053,7 +1132,7 @@ function loop(action) {
             }
             /* 兼容旧动作名: 步长正数自增/负数自减 */
             case "动作类-数组字段自增自减": {
-                var aName = auto.getValue('数组变量名') || '';
+                var aName = arrResolveName();
                 var kField = auto.getValue('匹配字段') || 'name';
                 var mVal = auto.getValue('匹配值') || '';
                 var iField = auto.getValue('自增字段') || 'count';
