@@ -1,0 +1,10 @@
+{
+  "name": "看门狗",
+  "main": "main.js",
+  "versionName": "1.0.0",
+  "versionCode": 100,
+  "packageName": "com.watchdog.v1",
+  "launchConfig": {
+    "hideLogs": false
+  }
+}

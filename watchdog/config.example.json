@@ -1,0 +1,31 @@
+{
+  "server": "https://2498755236.byethost7.com",
+  "reportIntervalSec": 60,
+  "guardIntervalSec": 15,
+  "sentinelIntervalSec": 10,
+  "maxStallSec": 90,
+  "maxRestartStreak": 5,
+  "useShell": true,
+  "useRootShell": false,
+  "selfRevive": true,
+  "accessibilityWatch": true,
+  "watchApps": [
+    { "pkg": "com.example.editor", "name": "自动化编辑器" }
+  ],
+  "watchScripts": [
+    { "path": "/sdcard/脚本/main.js", "name": "业务脚本" }
+  ],
+  "checkMode": "both",
+  "monitorKey": "",
+  "serverAliveThresholdSec": 180,
+  "listIntervalSec": 120,
+  "guardWindowEnabled": false,
+  "guardStart": "08:00",
+  "guardEnd": "22:00",
+  "freezeWatch": true,
+  "freezeSampleSec": 20,
+  "freezeThresholdTimes": 3,
+  "freezeGraceSec": 60,
+  "freezePixelFallback": false,
+  "overlayPkgs": []
+}
