@@ -55,7 +55,9 @@ public class OcrAreaRecog extends BaseOcrAction {
         }
         String raw = OcrEngine.recognize(mContext, region, type);
         String data = OcrEngine.dataOf(raw);
-        out.put(RESULT_TEXT, data == null ? "" : data);
+        /* 识别结果统一为标准数组格式 [{"name":"文字","count":".."}], 转换失败回退原始 data */
+        String std = data == null ? null : OcrEngine.stdOf(data, type);
+        out.put(RESULT_TEXT, std != null ? std : (data == null ? "" : data));
         if (region != screenshot) {
             region.recycle();
         }

@@ -222,19 +222,27 @@ function dbAcc() {
         PRIMARY KEY (user_id, uuid),
         UNIQUE KEY uniq_bind_uuid (uuid)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
-    /* 设备编辑器变量: 三组 — 查看变量 (设备上报, 网页只读) + 修改变量内容 (设备上报, 网页在此基础上修改下发)
-     * + 下发暂存 (网页保存, 设备心跳拉取) */
+    /* 设备编辑器变量: 四组 — 查看变量 (设备上报, 网页只读) + 修改变量/配置变量内容 (设备上报, 网页在此基础上修改下发)
+     * + 各自下发暂存 (网页保存, 设备心跳拉取) */
     $__accDb->query("CREATE TABLE IF NOT EXISTS monitor_vars (
         uuid VARCHAR(32) PRIMARY KEY,
         view_var MEDIUMTEXT NOT NULL,
         edit_var_dev MEDIUMTEXT NOT NULL,
         edit_var MEDIUMTEXT NOT NULL,
+        config_var_dev MEDIUMTEXT NOT NULL,
+        config_var MEDIUMTEXT NOT NULL,
         updated_ms BIGINT NOT NULL DEFAULT 0
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
     /* 存量表补列 (幂等) */
     $__rV = $__accDb->query("SELECT 1 FROM information_schema.COLUMNS
         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'monitor_vars' AND COLUMN_NAME = 'edit_var_dev'");
     if ($__rV && !$__rV->fetch_assoc()) $__accDb->query("ALTER TABLE monitor_vars ADD COLUMN edit_var_dev MEDIUMTEXT NOT NULL AFTER view_var");
+    $__rV = $__accDb->query("SELECT 1 FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'monitor_vars' AND COLUMN_NAME = 'config_var_dev'");
+    if ($__rV && !$__rV->fetch_assoc()) $__accDb->query("ALTER TABLE monitor_vars ADD COLUMN config_var_dev MEDIUMTEXT NOT NULL AFTER edit_var");
+    $__rV = $__accDb->query("SELECT 1 FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'monitor_vars' AND COLUMN_NAME = 'config_var'");
+    if ($__rV && !$__rV->fetch_assoc()) $__accDb->query("ALTER TABLE monitor_vars ADD COLUMN config_var MEDIUMTEXT NOT NULL AFTER config_var_dev");
     return $__accDb;
 }
 
@@ -308,6 +316,15 @@ function dbInitSchema() {
         'floor'          => "ALTER TABLE client_status ADD COLUMN floor INT NOT NULL DEFAULT 0",
         'round'          => "ALTER TABLE client_status ADD COLUMN round INT NOT NULL DEFAULT 0",
         'reset_cmd'      => "ALTER TABLE client_status ADD COLUMN reset_cmd TINYINT NOT NULL DEFAULT 0",
+        'rt_ms'          => "ALTER TABLE client_status ADD COLUMN rt_ms INT UNSIGNED NOT NULL DEFAULT 0",
+        'env'            => "ALTER TABLE client_status ADD COLUMN env VARCHAR(64) NOT NULL DEFAULT ''",
+        'android_ver'    => "ALTER TABLE client_status ADD COLUMN android_ver VARCHAR(24) NOT NULL DEFAULT ''",
+        'dev_uptime_sec' => "ALTER TABLE client_status ADD COLUMN dev_uptime_sec INT UNSIGNED NOT NULL DEFAULT 0",
+        'disk_avail_mb'  => "ALTER TABLE client_status ADD COLUMN disk_avail_mb INT UNSIGNED NOT NULL DEFAULT 0",
+        'orientation'    => "ALTER TABLE client_status ADD COLUMN orientation VARCHAR(10) NOT NULL DEFAULT ''",
+        'hb_gap_sec'     => "ALTER TABLE client_status ADD COLUMN hb_gap_sec INT UNSIGNED NOT NULL DEFAULT 0",
+        'bat_status'     => "ALTER TABLE client_status ADD COLUMN bat_status TINYINT UNSIGNED NOT NULL DEFAULT 0",
+        'mon_ver'        => "ALTER TABLE client_status ADD COLUMN mon_ver VARCHAR(24) NOT NULL DEFAULT ''",
     );
     foreach ($__newCols as $__col => $__ddl) {
         $__r = $db->query("SELECT 1 FROM information_schema.COLUMNS
@@ -1257,13 +1274,25 @@ function handleMonitorReport($body) {
         'hp'             => max(0, min(9999999999, intval(isset($body['hp']) ? $body['hp'] : 0))),
         'floor'          => max(0, min(9999999, intval(isset($body['floor']) ? $body['floor'] : 0))),
         'round'          => max(0, min(9999999999, intval(isset($body['round']) ? $body['round'] : 0))),
+        /* 诊断项: 往返延迟/运行环境/Android版本/设备开机时长/磁盘可用/屏幕方向/心跳间隔/充电状态 */
+        'rt_ms'          => max(0, min(600000, intval(isset($body['rtMs']) ? $body['rtMs'] : 0))),
+        'env'            => utf8Truncate(isset($body['env']) ? $body['env'] : '', 64),
+        'android_ver'    => utf8Truncate(isset($body['androidVer']) ? $body['androidVer'] : '', 24),
+        'dev_uptime_sec' => max(0, min(4000000000, intval(isset($body['deviceUptimeSec']) ? $body['deviceUptimeSec'] : 0))),
+        'disk_avail_mb'  => max(0, min(2000000, intval(isset($body['diskAvailMb']) ? $body['diskAvailMb'] : 0))),
+        'orientation'    => utf8Truncate(isset($body['orientation']) ? $body['orientation'] : '', 10),
+        'hb_gap_sec'     => max(0, min(3000000, intval(isset($body['hbGapSec']) ? $body['hbGapSec'] : 0))),
+        'bat_status'     => max(0, min(3, intval(isset($body['batStatus']) ? $body['batStatus'] : 0))),
+        /* 客户端插件版本号 (monitor.js MON_VERSION), 设备卡与升级排查用 */
+        'mon_ver'        => utf8Truncate(isset($body['ver']) ? $body['ver'] : '', 24),
     );
     dbExec(
         "INSERT INTO client_status
             (device_id, model, brand, product, screen, dpi, task_count, error_count, last_error, uptime_sec, note,
              battery, mem_total_mb, mem_avail_mb, screen_on, foreground_pkg, editor_ver, uuid,
-             gold, hp, floor, round, report_count, first_seen, last_seen)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             gold, hp, floor, round, rt_ms, env, android_ver, dev_uptime_sec, disk_avail_mb, orientation, hb_gap_sec, bat_status,
+             mon_ver, report_count, first_seen, last_seen)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON DUPLICATE KEY UPDATE
             model=VALUES(model), brand=VALUES(brand), product=VALUES(product), screen=VALUES(screen), dpi=VALUES(dpi),
             task_count=VALUES(task_count), error_count=VALUES(error_count), last_error=VALUES(last_error),
@@ -1271,31 +1300,73 @@ function handleMonitorReport($body) {
             battery=VALUES(battery), mem_total_mb=VALUES(mem_total_mb), mem_avail_mb=VALUES(mem_avail_mb),
             screen_on=VALUES(screen_on), foreground_pkg=VALUES(foreground_pkg), editor_ver=VALUES(editor_ver),
             uuid=VALUES(uuid), gold=VALUES(gold), hp=VALUES(hp), floor=VALUES(floor), round=VALUES(round),
+            rt_ms=VALUES(rt_ms), env=VALUES(env), android_ver=VALUES(android_ver),
+            dev_uptime_sec=VALUES(dev_uptime_sec), disk_avail_mb=VALUES(disk_avail_mb),
+            orientation=VALUES(orientation), hb_gap_sec=VALUES(hb_gap_sec), bat_status=VALUES(bat_status),
+            mon_ver=VALUES(mon_ver),
             report_count=report_count+1, last_seen=VALUES(last_seen)",
         array_merge(array($deviceId), array_values($fields), array(1, $now, $now))
     );
-    /* 编辑器"查看变量"+"修改变量内容"上报: 均为设备原始字符串, 尽力存储, 失败不影响心跳;
-     * 修改变量内容 (editVarDev) 是网页可修改项的数据来源, 下发暂存 (edit_var) 不被上报覆盖;
-     * 旧客户端未带 editVarDev 字段时仅更新查看变量 (保留已存修改变量内容) */
+    /* 编辑器"查看变量"+"修改变量内容"+"配置变量内容"上报: 均为设备原始字符串, 尽力存储, 失败不影响心跳;
+     * 修变量内容 (editVarDev) 与配置变量内容 (configVarDev) 是网页可修改项的数据来源, 下发暂存 (edit_var/config_var) 默认不被上报覆盖;
+     * 上发配置 (uploadCfg=1, 设备为新配置源): 设备上报内容反向覆盖下发基线 (edit_var/config_var), 网页基线与设备当前配置对齐;
+     * 旧客户端未带对应字段时保留已存内容 */
     $repUuid = strtoupper(strval($fields['uuid']));
+    $upCfg = isset($body['uploadCfg']) && intval($body['uploadCfg']) === 1;
     if ($repUuid !== '' && (isset($body['viewVar']) || isset($body['editVarDev']))) {
         $vv = isset($body['viewVar']) && is_string($body['viewVar']) ? strval($body['viewVar']) : '';
         $dv = isset($body['editVarDev']) && is_string($body['editVarDev']) ? strval($body['editVarDev']) : null;
         $nowV = nowMs();
         $empty = '';
         if ($dv !== null && strlen($vv) <= 65536 && strlen($dv) <= 65536) {
-            $stV = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, updated_ms) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE view_var = VALUES(view_var), edit_var_dev = VALUES(edit_var_dev), updated_ms = VALUES(updated_ms)");
+            $cvd = isset($body['configVarDev']) && is_string($body['configVarDev']) ? strval($body['configVarDev']) : '';
+            if ($upCfg) {
+                $stV = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, updated_ms) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE view_var = VALUES(view_var), edit_var_dev = VALUES(edit_var_dev), edit_var = VALUES(edit_var), updated_ms = VALUES(updated_ms)");
+                if ($stV) {
+                    $stV->bind_param('ssssssi', $repUuid, $vv, $dv, $dv, $cvd, $empty, $nowV);
+                    $stV->execute();
+                    $stV->close();
+                    /* 上发生效审计: 设备内容已反向覆盖下发基线; 摘要一行可读, 完整 JSON 快照限长 2000 供网页展开查看 */
+                    auditLog('配置上发', array('device' => maskId($repUuid), 'by' => '设备', 'editLen' => strlen($dv), 'cfgLen' => strlen($cvd),
+                        'cfg' => monVarsDigest($cvd), 'edit' => monVarsDigest($dv),
+                        'cfgContent' => utf8Truncate($cvd, 2000), 'editContent' => utf8Truncate($dv, 2000)));
+                }
+            } else {
+                $stV = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, updated_ms) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE view_var = VALUES(view_var), edit_var_dev = VALUES(edit_var_dev), updated_ms = VALUES(updated_ms)");
+                if ($stV) {
+                    $stV->bind_param('ssssssi', $repUuid, $vv, $dv, $empty, $cvd, $empty, $nowV);
+                    $stV->execute();
+                    $stV->close();
+                }
+            }
+        } elseif ($dv === null && strlen($vv) <= 65536) {
+            $stV = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, updated_ms) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE view_var = VALUES(view_var), updated_ms = VALUES(updated_ms)");
             if ($stV) {
-                $stV->bind_param('ssssi', $repUuid, $vv, $dv, $empty, $nowV);
+                $stV->bind_param('ssssssi', $repUuid, $vv, $empty, $empty, $empty, $empty, $nowV);
                 $stV->execute();
                 $stV->close();
             }
-        } elseif ($dv === null && strlen($vv) <= 65536) {
-            $stV = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var, updated_ms) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE view_var = VALUES(view_var), updated_ms = VALUES(updated_ms)");
-            if ($stV) {
-                $stV->bind_param('sssi', $repUuid, $vv, $empty, $nowV);
-                $stV->execute();
-                $stV->close();
+        }
+    }
+    /* 配置变量内容上报: 与修改变量同构的第二组可修改下发数据, 下发暂存 (config_var) 默认不被上报覆盖;
+     * 上发配置 (uploadCfg=1) 时设备内容反向覆盖 config_var 基线 */
+    if ($repUuid !== '' && isset($body['configVarDev']) && is_string($body['configVarDev']) && strlen($body['configVarDev']) <= 65536) {
+        $cv = strval($body['configVarDev']);
+        $nowC = nowMs();
+        $emptyC = '';
+        if ($upCfg) {
+            $stC = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, updated_ms) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE config_var_dev = VALUES(config_var_dev), config_var = VALUES(config_var), updated_ms = VALUES(updated_ms)");
+            if ($stC) {
+                $stC->bind_param('ssssssi', $repUuid, $emptyC, $emptyC, $emptyC, $cv, $cv, $nowC);
+                $stC->execute();
+                $stC->close();
+            }
+        } else {
+            $stC = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, updated_ms) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE config_var_dev = VALUES(config_var_dev), updated_ms = VALUES(updated_ms)");
+            if ($stC) {
+                $stC->bind_param('ssssssi', $repUuid, $emptyC, $emptyC, $emptyC, $cv, $emptyC, $nowC);
+                $stC->execute();
+                $stC->close();
             }
         }
     }
@@ -1308,7 +1379,7 @@ function handleMonitorReport($body) {
     /* 清零指令: 置位后随下一次心跳下发, 下发即消费清零 (设备端收到后归零本地计数, 下次心跳上报 0) */
     $resetCmd = !empty($row['reset_cmd']);
     if ($resetCmd) dbExec("UPDATE client_status SET reset_cmd = 0 WHERE device_id = ?", array($deviceId));
-    respond(array('success' => true, 'timestamp' => intval($now / 1000), 'status' => strval($row['status']), 'resetCmd' => $resetCmd));
+    respond(array('success' => true, 'timestamp' => intval($now / 1000), 'status' => strval($row['status']), 'resetCmd' => $resetCmd, 'screen' => monScreenInfo($repUuid, nowSec())));
 }
 
 /* 管理端: 下发任务/错误计数清零指令 (全部设备置位 reset_cmd, 设备心跳领取后本地归零并回传 0) */
@@ -1321,13 +1392,131 @@ function handleMonitorClearCounts($body) {
         respond(array('success' => false, 'message' => '密钥错误'), 401);
     }
     adminFailClear($cip);
-    $n = dbExec("UPDATE client_status SET reset_cmd = 1", array());
-    auditLog('监控计数清零指令', array('devices' => intval($n)));
+    /* 可选 uuid: 单设备清零 (测试设备/个别设备场景, 被删设备心跳重建行后可单发); 缺省全部设备;
+     * force=1 + uuid: 强清 (永久离线的设备永远领不到 reset_cmd 指令, 服务端直接清计数镜像;
+     * 设备日后复活会把本地计数再次上报回来, 仅对确认永久离线的设备使用) */
+    $uuid = strtoupper(preg_replace('/[^0-9A-Fa-f\-]/', '', strval(isset($body['uuid']) ? $body['uuid'] : '')));
+    if ($uuid !== '' && !empty($body['force'])) {
+        $n = dbExec("UPDATE client_status SET task_count = 0, error_count = 0, last_error = '' WHERE uuid = ?", array($uuid));
+        auditLog('监控计数强清', array('uuid' => maskId($uuid), 'by' => '管理员'));
+        respond(array('success' => true, 'message' => '服务端计数已清零', 'devices' => intval($n)));
+    }
+    if ($uuid !== '') {
+        $n = dbExec("UPDATE client_status SET reset_cmd = 1 WHERE uuid = ?", array($uuid));
+        auditLog('监控计数清零指令', array('scope' => '单设备', 'uuid' => maskId($uuid), 'by' => '管理员'));
+    } else {
+        $n = dbExec("UPDATE client_status SET reset_cmd = 1", array());
+        auditLog('监控计数清零指令', array('devices' => intval($n), 'by' => '管理员'));
+    }
     respond(array('success' => true, 'message' => '清零指令已下发, 等待设备心跳应用', 'devices' => intval($n)));
 }
 
-/* 缩略图上传: 复用 TOTP 验签; 覆盖式存储 mon_thumbs/{uuid}.jpg;
- * 限频用文件 mtime (150s), 不查库; 服务端按需再缩 (客户端已缩到 180 宽) */
+/* 缩略图上传: 复用 TOTP 验签; 覆盖式存储 mon_thumbs/{uuid}.webp (jpg 兜底);
+ * 限频用文件 mtime (100s), 不查库;
+ * 双引擎策略: Imagick 优先 (Lanczos 缩放 + adaptiveSharpen 智能轻度锐化, WebP q95),
+ * Imagick 异常/不可用时 GD 兜底 (Bicubic 缩放, 不做任何增强, 防马赛克放大与锐化白边),
+ * 两引擎全失败则原始字节直存保底;
+ * 480 宽防御缩回与变形防御 (比例偏差超 50% 压回屏幕比例) 为两引擎共用逻辑 */
+/* ============ 画面状态检测 (缩略图 dHash 对比 + 黑屏检测) ============ */
+/* 原理: 每张缩略图落盘前与上一张的 dHash 指纹比对, 汉明距离<=3 判画面未变;
+ * 状态存 carddata/state/screen_{UUID}.json (与限频/防爆破状态同目录, HTTP 不可达) */
+define('MON_SCREEN_HASH_SIM', 3);     /* dHash 汉明距离 <= 3 视为同一画面 (容忍压缩噪声) */
+define('MON_SCREEN_STATIC_SEC', 240); /* 连续未变 >= 240s (两个上传周期) 才报静止, 减少误报 */
+
+/* 帧分析: GD 解码 → 黑屏判定 (32x32 灰度均值<18 且方差<300) + dHash 指纹 (裁掉顶部
+ * 状态栏 1/12 高度后缩 9x8 灰度, 行内左>右记 1, 64 位 = 16 hex); 失败返回 null */
+function monScreenAnalyzeBin($bin) {
+    if (!function_exists('imagecreatefromstring')) return null;
+    $im = @imagecreatefromstring($bin);
+    if ($im === false) return null;
+    $w = imagesx($im); $h = imagesy($im);
+    if ($w < 9 || $h < 16) { imagedestroy($im); return null; }
+    $g = imagecreatetruecolor(32, 32);
+    imagecopyresampled($g, $im, 0, 0, 0, 0, 32, 32, $w, $h);
+    imagefilter($g, IMG_FILTER_GRAYSCALE);
+    $sum = 0; $sum2 = 0;
+    for ($y = 0; $y < 32; $y++) {
+        for ($x = 0; $x < 32; $x++) {
+            $v = imagecolorat($g, $x, $y) & 0xFF;
+            $sum += $v; $sum2 += $v * $v;
+        }
+    }
+    imagedestroy($g);
+    $mean = $sum / 1024;
+    $variance = max(0, $sum2 / 1024 - $mean * $mean);
+    $cropY = intval($h / 12);
+    $d = imagecreatetruecolor(9, 8);
+    imagecopyresampled($d, $im, 0, 0, 0, $cropY, 9, 8, $w, $h - $cropY);
+    imagefilter($d, IMG_FILTER_GRAYSCALE);
+    $hex = '';
+    for ($y = 0; $y < 8; $y++) {
+        $bits = '';
+        for ($x = 0; $x < 8; $x++) {
+            $l = imagecolorat($d, $x, $y) & 0xFF;
+            $r = imagecolorat($d, $x + 1, $y) & 0xFF;
+            $bits .= ($l > $r) ? '1' : '0';
+        }
+        $hex .= str_pad(base_convert($bits, 2, 16), 2, '0', STR_PAD_LEFT);
+    }
+    imagedestroy($d);
+    imagedestroy($im);
+    return array('hash' => $hex, 'black' => ($mean < 18 && $variance < 300));
+}
+
+/* 16 hex dHash 指纹的汉明距离 (长度异常返回 99 = 视为不同画面) */
+function monHammingHex($a, $b) {
+    if (!is_string($a) || !is_string($b) || strlen($a) !== 16 || strlen($b) !== 16) return 99;
+    $dist = 0;
+    for ($i = 0; $i < 16; $i++) {
+        $x = hexdec($a[$i]) ^ hexdec($b[$i]);
+        while ($x) { $dist += $x & 1; $x >>= 1; }
+    }
+    return $dist;
+}
+
+/* 收到新缩略图时更新画面状态: hash 相同保持 changed_ts (静止时长自动累计),
+ * 变化/首次则重置; 黑屏单独记 black_since; 尽力而为, 失败不影响存储流程 */
+function monScreenUpdate($uuid, $bin, $nowSec) {
+    $u = strtoupper(preg_replace('/[^0-9A-Fa-f\-]/', '', strval($uuid)));
+    if ($u === '' || strlen($u) > 32) return;
+    $an = monScreenAnalyzeBin($bin);
+    if ($an === null) return;
+    $key = 'screen_' . $u;
+    $st = loadState($key, null);
+    if (!is_array($st)) $st = array();
+    if (isset($st['hash']) && monHammingHex($st['hash'], $an['hash']) <= MON_SCREEN_HASH_SIM) {
+        /* 画面未变: changed_ts 保留, 静止时长持续累计 */
+    } else {
+        $st['hash'] = $an['hash'];
+        $st['changed_ts'] = $nowSec;
+    }
+    if ($an['black']) {
+        if (empty($st['black']) || empty($st['black_since'])) $st['black_since'] = $nowSec;
+        $st['black'] = true;
+    } else {
+        $st['black'] = false;
+        $st['black_since'] = 0;
+    }
+    $st['updated_ts'] = $nowSec;
+    saveState($key, $st);
+}
+
+/* 读取画面状态 (心跳响应/缩略图响应/设备列表共用); 无数据返回 null */
+function monScreenInfo($uuid, $nowSec) {
+    $u = strtoupper(preg_replace('/[^0-9A-Fa-f\-]/', '', strval($uuid)));
+    if ($u === '' || strlen($u) > 32) return null;
+    $st = loadState('screen_' . $u, null);
+    if (!is_array($st) || !isset($st['hash'], $st['changed_ts'])) return null;
+    $staticSec = max(0, $nowSec - intval($st['changed_ts']));
+    $black = !empty($st['black']);
+    $blackSec = ($black && !empty($st['black_since'])) ? max(0, $nowSec - intval($st['black_since'])) : 0;
+    return array(
+        'state'      => $black ? 'black' : ($staticSec >= MON_SCREEN_STATIC_SEC ? 'static' : 'normal'),
+        'static_sec' => $staticSec,
+        'black_sec'  => $blackSec,
+    );
+}
+
 function handleMonitorThumb($body) {
     /* http.upload 走 multipart: 签名参数在 $_POST, JSON body 为空 → 合并取值 */
     if (!empty($_POST) && is_array($body)) { $body = array_merge($body, $_POST); }
@@ -1360,40 +1549,215 @@ function handleMonitorThumb($body) {
         respond(array('success' => false, 'message' => '图像格式不支持'), 400);
     }
     $dir = __DIR__ . '/mon_thumbs';
-    if (!is_dir($dir)) @mkdir($dir, 0755, true);
-    $file = $dir . '/' . $uuid . '.jpg';
+    if (!is_dir($dir)) @mkdir($dir, 0755, true);   /* 幂等: 新部署/本地测试环境首次落盘自建 */
+    $file = $dir . '/' . $uuid . '.webp';
     /* 限频: 100 秒内已更新过则幂等跳过 (须短于客户端 120s 节流, 保证每次上传都真落盘) */
     if (is_file($file) && (time() - filemtime($file)) < 100) {
         respond(array('success' => true, 'skipped' => true));
     }
+    if (is_file($dir . '/' . $uuid . '.jpg') && (time() - filemtime($dir . '/' . $uuid . '.jpg')) < 100) {
+        respond(array('success' => true, 'skipped' => true));
+    }
+    /* 画面状态分析: 与上一张 dHash 对比 + 黑屏检测, 先于落盘 (旧图此时还是上一张) */
+    monScreenUpdate($uuid, $bin, nowSec());
     $saved = false;
-    if (function_exists('imagecreatefromstring')) {
-        $im = @imagecreatefromstring($bin);
-        if ($im !== false) {
-            $w = imagesx($im);
-            $h = imagesy($im);
-            $tw = min($w, 360);
-            $th = max(1, intval($h * $tw / $w));
-            if ($tw < $w) {
-                $im2 = imagescale($im, $tw, $th);
-                if ($im2 !== false) { imagedestroy($im); $im = $im2; }
+    /* 目标宽: 该设备上报的屏幕分辨率宽 (还原原分辨率);
+     * 未上报/格式异常兜底 720, 上限 1080 (防 2K 平板内存与体积失控) */
+    $targetW = 720;
+    $scrW = 0; $scrH = 0;
+    try {
+        $st = db()->prepare("SELECT screen FROM client_status WHERE uuid = ?");
+        if ($st && $st->bind_param('s', $uuid) && $st->execute() && ($rw = $st->get_result()->fetch_assoc())) {
+            if (preg_match('/^(\d{2,5})\s*[xX×*]\s*(\d{2,5})$/', strval($rw['screen']), $m)) {
+                $scrW = intval($m[1]); $scrH = intval($m[2]);
+                $targetW = min(max($scrW, 480), 1080);
             }
-            $saved = imagejpeg($im, $file, 60);
-            imagedestroy($im);
+        }
+    } catch (Exception $eT) {}
+
+    /* ============ 引擎 1: Imagick 优先 ============ */
+    if (class_exists('Imagick')) {
+        try {
+            $im = new Imagick();
+            $im->readImageBlob($bin);
+            $w = $im->getImageWidth();
+            $h = $im->getImageHeight();
+            if ($w > 0 && $h > 0) {
+                /* 防御: 异常大图先缩回 480 宽基准 (客户端正常路径已是 480, 不触发) */
+                if ($w > 480) {
+                    $th = max(1, intval($h * 480 / $w));
+                    $im->resizeImage(480, $th, Imagick::FILTER_LANCZOS, 1);
+                    $w = 480; $h = $th;
+                }
+                /* 变形防御: 图宽高比与屏幕宽高比偏差超 50% (旧版横屏设备传竖长图等)
+                 * 时按屏幕比例压回正确形状 */
+                if ($scrW > 0 && $scrH > 0) {
+                    $imgRatio = $w / $h;
+                    $scrRatio = $scrW / $scrH;
+                    if ($imgRatio / $scrRatio > 1.5 || $scrRatio / $imgRatio > 1.5) {
+                        $fixH = max(1, intval($w * $scrH / $scrW));
+                        $im->resizeImage($w, $fixH, Imagick::FILTER_LANCZOS, 1);
+                        $h = $fixH;
+                    }
+                }
+                /* Lanczos 放大到设备原分辨率宽: 高质量重采样, 边缘干净无马赛克 */
+                if ($w < $targetW) {
+                    $uh = max(1, intval($h * $targetW / $w));
+                    $im->resizeImage($targetW, $uh, Imagick::FILTER_LANCZOS, 1);
+                }
+                /* 智能轻度锐化: 仅此一次, 按局部亮度自适应增强边缘, 无暴力卷积白边 */
+                $im->adaptiveSharpenImage(0.8, 0.6, Imagick::CHANNEL_ALL);
+                /* WebP q95 优先 (同体积比 JPEG 更清晰), 编码/写盘失败回落 JPEG q95;
+                 * 成功后清旧后缀文件防新旧并存 */
+                $im->setImageFormat('webp');
+                $im->setImageCompressionQuality(95);
+                $saved = file_put_contents($file, $im->getImageBlob()) !== false;
+                if ($saved) {
+                    @unlink($dir . '/' . $uuid . '.jpg');
+                } else {
+                    $file = $dir . '/' . $uuid . '.jpg';
+                    $im->setImageFormat('jpeg');
+                    $im->setImageCompressionQuality(95);
+                    $saved = file_put_contents($file, $im->getImageBlob()) !== false;
+                    if ($saved) @unlink($dir . '/' . $uuid . '.webp');
+                }
+            }
+            $im->destroy();
+        } catch (Exception $e) {
+            $saved = false;   /* Imagick 任一步异常 → 无缝切入 GD 兜底 */
+        } catch (Throwable $t) {
+            $saved = false;
         }
     }
+
+    /* ============ 引擎 2: GD 兜底 (纯缩放, 不做任何锐化/去块增强) ============ */
+    if (!$saved && function_exists('imagecreatefromstring')) {
+        try {
+            $im = @imagecreatefromstring($bin);
+            if ($im !== false) {
+                $w = imagesx($im);
+                $h = imagesy($im);
+                /* 防御: 异常大图先缩回 480 宽基准 */
+                if ($w > 480) {
+                    $th = max(1, intval($h * 480 / $w));
+                    $im2 = imagescale($im, 480, $th, IMG_BICUBIC);
+                    if ($im2 !== false) { imagedestroy($im); $im = $im2; $w = 480; $h = $th; }
+                }
+                /* 变形防御: 同 Imagick 策略, 比例偏差超 50% 按屏幕比例压回 */
+                if ($scrW > 0 && $scrH > 0 && $w > 0 && $h > 0) {
+                    $imgRatio = $w / $h;
+                    $scrRatio = $scrW / $scrH;
+                    if ($imgRatio / $scrRatio > 1.5 || $scrRatio / $imgRatio > 1.5) {
+                        $fixH = max(1, intval($w * $scrH / $scrW));
+                        $im2 = imagescale($im, $w, $fixH, IMG_BICUBIC);
+                        if ($im2 !== false) { imagedestroy($im); $im = $im2; $h = $fixH; }
+                    }
+                }
+                /* Bicubic 放大到设备原分辨率宽 */
+                if ($w < $targetW) {
+                    $uh = max(1, intval($h * $targetW / $w));
+                    $im2 = imagescale($im, $targetW, $uh, IMG_BICUBIC);
+                    if ($im2 !== false) { imagedestroy($im); $im = $im2; }
+                }
+                /* WebP q95 优先, 失败回落 JPEG q95 */
+                if (function_exists('imagewebp')) {
+                    $saved = @imagewebp($im, $file, 95);
+                }
+                if ($saved) {
+                    @unlink($dir . '/' . $uuid . '.jpg');
+                } else {
+                    $file = $dir . '/' . $uuid . '.jpg';
+                    $saved = imagejpeg($im, $file, 95);
+                    if ($saved) @unlink($dir . '/' . $uuid . '.webp');
+                }
+                imagedestroy($im);
+            }
+        } catch (Exception $e) {
+            $saved = false;
+        } catch (Throwable $t) {
+            $saved = false;
+        }
+    }
+
+    /* ============ 保底: 两引擎全失败 → 原始字节直存 (客户端 JPEG 原样, 无二次编码损失) ============ */
     if (!$saved) {
-        /* GD 不可用时直接存原始字节 (客户端已缩过, 体积可控) */
-        $saved = file_put_contents($file, $bin) !== false;
+        $saved = file_put_contents($dir . '/' . $uuid . '.jpg', $bin) !== false;
+        if ($saved) @unlink($dir . '/' . $uuid . '.webp');
     }
     if (!$saved) {
         respond(array('success' => false, 'message' => '存储失败'), 500);
     }
-    respond(array('success' => true));
+    respond(array('success' => true, 'screen' => monScreenInfo($uuid, nowSec())));
 }
 
 /* 在线判定阈值: 60 秒心跳, 2.5 个周期无心跳判离线 */
 define('MONITOR_ONLINE_MS', 150000);
+
+/* 审计日志查询 (仅管理员): GET /api/monitor/audit?key=...&limit=N
+ * 从 audit.log 尾部高效读取 N 行, 解析为 {ts, action, detail} 倒序返回 */
+function handleMonitorAudit($query) {
+    global $LOG_DIR;
+    if (adminFailCheck(clientIp())) respond(array('success' => false, 'message' => '失败次数过多, IP 已被暂时封禁'), 429);
+    if (!monitorAuth(strval(isset($query['key']) ? $query['key'] : ''))) {
+        adminFail(clientIp());
+        respond(array('success' => false, 'message' => '密钥错误'), 401);
+    }
+    adminFailClear(clientIp());
+    $limit = intval(isset($query['limit']) ? $query['limit'] : 300);
+    if ($limit < 1) $limit = 300;
+    if ($limit > 2000) $limit = 2000;
+    $file = $LOG_DIR . '/audit.log';
+    $rows = array();
+    if (is_file($file)) {
+        /* 从文件末尾按块向前读, 行按 新->旧 收集, 取满 limit 即停 (日志可能乱序交错, 以文件物理顺序为准) */
+        $lines = array();
+        $fh = @fopen($file, 'rb');
+        if ($fh) {
+            fseek($fh, 0, SEEK_END);
+            $size = ftell($fh);
+            $chunk = 65536;
+            $tail = '';
+            while ($size > 0 && count($lines) < $limit + 2) {
+                $read = min($chunk, $size);
+                $size -= $read;
+                fseek($fh, $size);
+                $parts = explode("\n", fread($fh, $read) . $tail);
+                /* 块尾的不完整行(前一块的开头)是 explode 的最后一个元素, 用 array_pop 挂起;
+                 * array_shift 会把首行当 tail 丢弃, 日志行数少时(如清空后仅剩留痕)整条读不出来 */
+                $tail = array_pop($parts);
+                $lines = array_merge(array_reverse($parts), $lines);
+            }
+            fclose($fh);
+        }
+        foreach ($lines as $line) {
+            if (count($rows) >= $limit) break;
+            $line = trim($line);
+            if ($line === '') continue;
+            if (!preg_match('/^\[([^\]]+)\] \[[^\]]+\] \[AUDIT\] (\S+) (.*)$/', $line, $m)) continue;
+            $d = json_decode($m[3], true);
+            $rows[] = array('ts' => $m[1], 'action' => $m[2], 'detail' => is_array($d) ? $d : array('raw' => $m[3]));
+        }
+    }
+    respond(array('success' => true, 'rows' => $rows, 'total' => count($rows)));
+}
+/* 清空审计日志: 仅管理员; 覆盖写空内容保留文件本身, 清空动作本身留痕 ("日志清空"条目) */
+function handleMonitorAuditClear($body) {
+    global $LOG_DIR;
+    if (adminFailCheck(clientIp())) respond(array('success' => false, 'message' => '失败次数过多, IP 已被暂时封禁'), 429);
+    if (!monitorAuth(strval(isset($body['key']) ? $body['key'] : ''))) {
+        adminFail(clientIp());
+        respond(array('success' => false, 'message' => '密钥错误'), 401);
+    }
+    adminFailClear(clientIp());
+    $file = $LOG_DIR . '/audit.log';
+    /* file_put_contents 写空内容成功时返回 0, 须用 !== false 判断 (0 是合法成功值) */
+    $ok = @file_put_contents($file, '', LOCK_EX);
+    if ($ok === false) {
+        respond(array('success' => false, 'message' => '清空失败, 请重试'), 500);
+    }
+    auditLog('日志清空', array('by' => '管理员'));
+    respond(array('success' => true));
+}
 
 function handleMonitorList($query) {
     global $CFG;
@@ -1409,16 +1773,18 @@ function handleMonitorList($query) {
     while ($row = $res->fetch_assoc()) {
         $row['online'] = (nowMs() - intval($row['last_seen'])) < MONITOR_ONLINE_MS;
         $row['thumb_mtime'] = monThumbMtime($row['uuid']);   /* 缩略图版本号, 前端据此判断换图 */
+        $row['screen_state'] = monScreenInfo($row['uuid'], nowSec());   /* 画面状态 (静止/黑屏) */
         $rows[] = $row;
     }
     respond(array('success' => true, 'devices' => $rows, 'serverTime' => nowSec()));
 }
 
-/* 缩略图文件版本: mtime 整数, 无图为 0 */
+/* 缩略图文件版本: mtime 整数, 无图为 0 (webp 主存, jpg 兜底兼容) */
 function monThumbMtime($uuid) {
     $u = strtoupper(preg_replace('/[^0-9A-Fa-f\-]/', '', strval($uuid)));
     if ($u === '') return 0;
-    $f = __DIR__ . '/mon_thumbs/' . $u . '.jpg';
+    $f = __DIR__ . '/mon_thumbs/' . $u . '.webp';
+    if (!is_file($f)) $f = __DIR__ . '/mon_thumbs/' . $u . '.jpg';
     return is_file($f) ? intval(filemtime($f)) : 0;
 }
 
@@ -1548,33 +1914,200 @@ function monCaptchaRequire($body) {
     if (!monCaptchaCheck($cid, $ctext)) respond(array('success' => false, 'message' => '验证码错误或已过期', 'code' => 'CAPTCHA'), 400);
 }
 
-/* 验证码图片: GD 画布 (132x44, 噪点+干扰线+随机色字符), 无 GD 时返回算术题 */
+/* 验证码图片: freedns 风格抗 OCR 设计 ——
+ * 1) 空心轮廓字符: TTF 实心字画在 3x 高分辨率画布 → 波形扭曲(列+行位移) →
+ *    提取 1px 轮廓线 → 下采样。OCR 依赖实心笔画分类, 空心细线+随机变形直接失效
+ * 2) 雪花符号噪点: +/* 星形小符号(有结构, 自适应二值化过滤不掉) + 细像素噪点
+ * 3) 正弦干扰粗线横穿字符区 + 虚线
+ * 4) 全灰阶纠缠: 轮廓 40-140 / 噪点 60-230 / 干扰线 30-110 灰度域重叠,
+ *    固定阈值二值化下字符与噪点同时出现或同时消失
+ * 无 TTF 字体时回退: 单字符画布放大 + imagerotate (纯 GD, 无 freetype 依赖) */
+function monCaptchaImg($text) {
+    $w = 160; $h = 52;
+    $img = imagecreatetruecolor($w, $h);
+    $white = imagecolorallocate($img, 255, 255, 255);
+    imagefilledrectangle($img, 0, 0, $w - 1, $h - 1, $white);
+    $font = __DIR__ . '/fonts/captcha.ttf';
+    $useTtf = function_exists('imagettftext') && is_file($font);
+
+    /* 细像素噪点 (灰度全域) */
+    for ($i = 0; $i < 320; $i++) {
+        $g = random_int(60, 230);
+        imagesetpixel($img, random_int(0, $w - 1), random_int(0, $h - 1), imagecolorallocate($img, $g, $g, $g));
+    }
+    /* 雪花/星形符号噪点 */
+    for ($i = 0; $i < 46; $i++) {
+        $g = random_int(90, 210);
+        $c = imagecolorallocate($img, $g, $g, $g);
+        $x = random_int(2, $w - 3); $y = random_int(2, $h - 3);
+        $r = random_int(1, 3);
+        imageline($img, $x - $r, $y, $x + $r, $y, $c);
+        imageline($img, $x, $y - $r, $x, $y + $r, $c);
+        if (random_int(0, 1)) {
+            imageline($img, $x - 1, $y - 1, $x + 1, $y + 1, $c);
+            imageline($img, $x - 1, $y + 1, $x + 1, $y - 1, $c);
+        }
+    }
+    /* 干扰线: 随机 2-3 条 (1-2 条点状虚线 + 1 条细实线), 沿随机正弦路径分布 */
+    $lineN = random_int(2, 3);
+    $plan = array();
+    for ($i = 0; $i < $lineN; $i++) {
+        $plan[] = $i < $lineN - 1;   /* 前 lineN-1 条为虚点线 */
+    }
+    shuffle($plan);
+    for ($i = 0; $i < $lineN; $i++) {
+        $g = random_int(40, 130);
+        $c = imagecolorallocate($img, $g, $g, $g);
+        $amp = random_int(4, 9);
+        $freq = random_int(6, 14) * 0.01;
+        $ph = mt_rand() / mt_getrandmax() * 6.28;
+        $y0 = random_int(8, $h - 8);
+        if ($plan[$i]) {
+            /* 虚点线: 沿正弦路径撒单像素点, 间隔 2-4px */
+            for ($x = 0; $x < $w; $x += random_int(2, 4)) {
+                $y = (int)($y0 + sin($x * $freq + $ph) * $amp);
+                imagesetpixel($img, $x, $y, $c);
+            }
+        } else {
+            /* 细实线: 分段小线段逼近正弦 */
+            imagesetthickness($img, 1);
+            $px = 0; $py = $y0;
+            for ($x = 3; $x <= $w; $x += 3) {
+                $y = (int)($y0 + sin($x * $freq + $ph) * $amp);
+                imageline($img, $px, $py, $x, $y, $c);
+                $px = $x; $py = $y;
+            }
+        }
+    }
+
+    /* 字符渲染 */
+    $n = strlen($text);
+    $slot = $w / $n;
+    for ($i = 0; $i < $n; $i++) {
+        $gch = random_int(30, 110);   /* 轮廓灰度, 与噪点灰度域重叠 */
+        if ($useTtf) {
+            /* 1. 高分辨率实心字符 (大字号, 画后按 bbox 裁掉旋转/扭曲留白) */
+            $cw = 240; $chh = 280;
+            $cimg = imagecreatetruecolor($cw, $chh);
+            imagefilledrectangle($cimg, 0, 0, $cw - 1, $chh - 1, imagecolorallocate($cimg, 255, 255, 255));
+            $size = random_int(110, 130);
+            $ang = random_int(-20, 20);
+            $ax = 55; $ay = 205;
+            $bb = imagettfbbox($size, $ang, $font, $text[$i]);
+            $bbMinX = min($bb[0], $bb[2], $bb[4], $bb[6]);
+            $bbMaxX = max($bb[0], $bb[2], $bb[4], $bb[6]);
+            $bbMinY = min($bb[1], $bb[3], $bb[5], $bb[7]);
+            $bbMaxY = max($bb[1], $bb[3], $bb[5], $bb[7]);
+            imagettftext($cimg, $size, $ang, $ax, $ay, imagecolorallocate($cimg, 0, 0, 0), $font, $text[$i]);
+            /* 2a. 列位移波形扭曲 (轻曲度: 波长 78-157px, 字符内不足 1 个波) */
+            $ampC = random_int(5, 9); $fc = random_int(4, 8) * 0.01;
+            $pc = mt_rand() / mt_getrandmax() * 6.28;
+            $timg = imagecreatetruecolor($cw, $chh);
+            imagefilledrectangle($timg, 0, 0, $cw - 1, $chh - 1, imagecolorallocate($timg, 255, 255, 255));
+            for ($x = 0; $x < $cw; $x++) {
+                $dy = (int)(sin($x * $fc + $pc) * $ampC);
+                if ($dy > 0) {
+                    imagecopy($timg, $cimg, $x, $dy, $x, 0, 1, $chh - $dy);
+                } else {
+                    imagecopy($timg, $cimg, $x, 0, $x, -$dy, 1, $chh + $dy);
+                }
+            }
+            /* 2b. 行位移波形扭曲 (轻曲度: 波长 63-126px) */
+            $ampR = random_int(1, 3); $fr = random_int(5, 10) * 0.01;
+            $pr = mt_rand() / mt_getrandmax() * 6.28;
+            $rimg = imagecreatetruecolor($cw, $chh);
+            imagefilledrectangle($rimg, 0, 0, $cw - 1, $chh - 1, imagecolorallocate($rimg, 255, 255, 255));
+            for ($y = 0; $y < $chh; $y++) {
+                $dx2 = (int)(sin($y * $fr + $pr) * $ampR);
+                if ($dx2 > 0) {
+                    imagecopy($rimg, $timg, $dx2, $y, 0, $y, $cw - $dx2, 1);
+                } else {
+                    imagecopy($rimg, $timg, 0, $y, -$dx2, $y, $cw + $dx2, 1);
+                }
+            }
+            /* 3. 轮廓提取 (只跑 bbox+扭曲余量区域): ±2 偏移 4 点全墨 = 内部点跳过,
+             *    边缘点涂 + 4 邻域膨胀, 下采样后轮廓仍清晰 */
+            $m = 22;   /* 扭曲振幅余量 */
+            $cx0 = max(2, (int)($ax + $bbMinX - $m));
+            $cx1 = min($cw - 3, (int)($ax + $bbMaxX + $m));
+            $cy0 = max(2, (int)($ay + $bbMinY - $m));
+            $cy1 = min($chh - 3, (int)($ay + $bbMaxY + $m));
+            $eimg = imagecreatetruecolor($cw, $chh);
+            imagefilledrectangle($eimg, 0, 0, $cw - 1, $chh - 1, imagecolorallocate($eimg, 255, 255, 255));
+            $ec = imagecolorallocate($eimg, $gch, $gch, $gch);
+            for ($y = $cy0; $y < $cy1; $y++) {
+                for ($x = $cx0; $x < $cx1; $x++) {
+                    if (((imagecolorat($rimg, $x, $y) >> 16) & 0xFF) < 128) {
+                        $up = ((imagecolorat($rimg, $x, $y - 2) >> 16) & 0xFF) < 128;
+                        $dn = ((imagecolorat($rimg, $x, $y + 2) >> 16) & 0xFF) < 128;
+                        $lf = ((imagecolorat($rimg, $x - 2, $y) >> 16) & 0xFF) < 128;
+                        $rt = ((imagecolorat($rimg, $x + 2, $y) >> 16) & 0xFF) < 128;
+                        if (!($up && $dn && $lf && $rt)) {
+                            imagesetpixel($eimg, $x, $y, $ec);
+                            imagesetpixel($eimg, $x + 1, $y, $ec);
+                            imagesetpixel($eimg, $x - 1, $y, $ec);
+                            imagesetpixel($eimg, $x, $y + 1, $ec);
+                            imagesetpixel($eimg, $x, $y - 1, $ec);
+                        }
+                    }
+                }
+            }
+            /* 4. 裁剪 bbox 后下采样贴回主画布 (字符本体充满槽位, 高度 42-47/52) */
+            $bw = $cx1 - $cx0; $bh = $cy1 - $cy0;
+            $dh = random_int(42, 47);
+            $dw = (int)($dh * $bw / $bh);
+            if ($dw > $slot - 2) {
+                $dw = (int)($slot - 2);
+                $dh = (int)($dw * $bh / $bw);
+            }
+            $small = imagecreatetruecolor($dw, $dh);
+            imagecopyresampled($small, $eimg, 0, 0, $cx0, $cy0, $dw, $dh, $bw, $bh);
+            /* 白色透明化: 干扰线从字符槽位穿过, 贴图只覆盖轮廓像素 */
+            imagecolortransparent($small, imagecolorallocate($small, 255, 255, 255));
+            imagecopy($img, $small, (int)($slot * $i + ($slot - $dw) / 2 + random_int(-1, 1)),
+                (int)(($h - $dh) / 2 + random_int(-2, 2)), 0, 0, $dw, $dh);
+            imagedestroy($cimg);
+            imagedestroy($timg);
+            imagedestroy($rimg);
+            imagedestroy($eimg);
+            imagedestroy($small);
+        } else {
+            $cw = 40; $ch = 56;
+            $c = imagecreatetruecolor($cw, $ch);
+            imagefilledrectangle($c, 0, 0, $cw, $ch, imagecolorallocate($c, 255, 255, 255));
+            imagestring($c, 5, 14, 20, $text[$i], imagecolorallocate($c, $gch, $gch, $gch));
+            $big = imagecreatetruecolor($cw * 2, $ch * 2);
+            imagecopyresized($big, $c, 0, 0, 0, 0, $cw * 2, $ch * 2, $cw, $ch);
+            $rot = imagerotate($big, random_int(-28, 28), imagecolorallocate($big, 255, 255, 255));
+            imagecopy($img, $rot, (int)($slot * $i + 4), (int)($h / 2 - $ch), 0, 0,
+                imagesx($rot), imagesy($rot));
+            imagedestroy($c);
+            imagedestroy($big);
+            imagedestroy($rot);
+        }
+    }
+    /* 字符上层再叠少量雪花, 部分遮挡笔画 */
+    for ($i = 0; $i < 14; $i++) {
+        $g = random_int(90, 200);
+        $c = imagecolorallocate($img, $g, $g, $g);
+        $x = random_int(2, $w - 3); $y = random_int(2, $h - 3);
+        $r = random_int(1, 2);
+        imageline($img, $x - $r, $y, $x + $r, $y, $c);
+        imageline($img, $x, $y - $r, $x, $y + $r, $c);
+    }
+    ob_start();
+    imagepng($img);
+    $png = ob_get_clean();
+    imagedestroy($img);
+    return $png;
+}
+
 function handleMonuCaptcha() {
     $id = bin2hex(random_bytes(16));
     if (function_exists('imagecreatetruecolor')) {
         $text = monCaptchaText();
         monCaptchaStore($id, $text);
-        $w = 132; $h = 44;
-        $img = imagecreatetruecolor($w, $h);
-        imagefilledrectangle($img, 0, 0, $w, $h, imagecolorallocate($img, 10, 10, 14));
-        for ($i = 0; $i < 6; $i++) {
-            $c = imagecolorallocate($img, random_int(40, 90), random_int(40, 90), random_int(40, 90));
-            imageline($img, random_int(0, $w), random_int(0, $h), random_int(0, $w), random_int(0, $h), $c);
-        }
-        for ($i = 0; $i < 200; $i++) {
-            $c = imagecolorallocate($img, random_int(30, 120), random_int(30, 120), random_int(30, 120));
-            imagesetpixel($img, random_int(0, $w - 1), random_int(0, $h - 1), $c);
-        }
-        $x = 14;
-        for ($i = 0; $i < strlen($text); $i++) {
-            $c = imagecolorallocate($img, random_int(150, 255), random_int(150, 255), random_int(90, 200));
-            imagestring($img, 5, $x, random_int(6, 20), $text[$i], $c);
-            $x += 26;
-        }
-        ob_start();
-        imagepng($img);
-        $png = ob_get_clean();
-        imagedestroy($img);
+        $png = monCaptchaImg($text);
         respond(array('success' => true, 'captchaId' => $id, 'image' => 'data:image/png;base64,' . base64_encode($png)));
     }
     /* GD 不可用: 算术题兜底 (答案存 text 字段, 同机制校验) */
@@ -1712,6 +2245,47 @@ function handleMonuLogout($body) {
     respond(array('success' => true));
 }
 
+/* 修改密码: 登录态 + CSRF + 旧密码验证 -> 更新; 吊销该账号其他 token (当前会话保留);
+ * 旧密码错误计入账号锁定 (防爆破, 与登录同构); 新密码规则与注册一致 */
+function handleMonuChangePwd($body) {
+    $userId = monRequireToken($body);
+    $tk = preg_replace('/[^0-9a-f]/', '', strval(isset($body['token']) ? $body['token'] : ''));
+    monRequireCsrf($tk);
+    $old = strval(isset($body['oldPwd']) ? $body['oldPwd'] : '');
+    $new = strval(isset($body['newPwd']) ? $body['newPwd'] : '');
+    if ($old === '' || $new === '') respond(array('success' => false, 'message' => '请输入旧密码和新密码'), 400);
+    if (strlen($new) < 8 || strlen($new) > 32 || !preg_match('/[A-Za-z]/', $new) || !preg_match('/[0-9]/', $new)) {
+        respond(array('success' => false, 'message' => '新密码需 8-32 位, 且必须包含字母和数字'), 400);
+    }
+    if ($old === $new) respond(array('success' => false, 'message' => '新密码不能与旧密码相同'), 400);
+    /* 账号锁定复用 (按用户名): 旧密码连续错 5 次 15 分钟锁定 */
+    $st = dbAcc()->prepare("SELECT username, pass_hash FROM monitor_users WHERE id = ?");
+    if (!$st) respond(array('success' => false, 'message' => '修改失败'), 500);
+    $st->bind_param('i', $userId);
+    $st->execute();
+    $row = $st->get_result()->fetch_assoc();
+    $st->close();
+    if (!$row) respond(array('success' => false, 'message' => '账号不存在'), 404);
+    $u = strval($row['username']);
+    if (monuLockCheck($u)) respond(array('success' => false, 'message' => '账号已锁定, 请 15 分钟后再试'), 429);
+    if (!password_verify($old, strval($row['pass_hash']))) {
+        monuLockFail($u);
+        respond(array('success' => false, 'message' => '旧密码错误'), 401);
+    }
+    monuLockClear($u);
+    $hash = password_hash($new, PASSWORD_DEFAULT);
+    $up = dbAcc()->prepare("UPDATE monitor_users SET pass_hash = ? WHERE id = ?");
+    if (!$up) respond(array('success' => false, 'message' => '修改失败'), 500);
+    $up->bind_param('si', $hash, $userId);
+    if (!$up->execute()) respond(array('success' => false, 'message' => '修改失败'), 500);
+    $up->close();
+    /* 吊销该账号其他 token (当前会话保留, 其他已登录设备强制重新登录) */
+    $rv = dbAcc()->prepare("DELETE FROM monitor_tokens WHERE user_id = ? AND token != ?");
+    if ($rv) { $rv->bind_param('is', $userId, $tk); $rv->execute(); $rv->close(); }
+    auditLog('修改密码', array('user' => maskId($u)));
+    respond(array('success' => true, 'message' => '密码已修改, 其他设备已退出登录'));
+}
+
 /* 绑定设备: 校验 uuid 真实存在于 client_status, 且未被其他账号绑定 */
 function handleMonuBind($body) {
     $userId = monRequireToken($body);
@@ -1839,11 +2413,32 @@ function handleMonitorSetStatus($body) {
     $st->bind_param('ss', $status, $keyVal);
     $st->execute();
     $st->close();
+    auditLog('状态修改', array('device' => maskId($keyVal), 'status' => $status === '' ? '在线' : $status,
+        'by' => monActorLabel($body)));
     respond(array('success' => true, 'status' => $status));
 }
 
 /* ==================== 设备编辑器变量 (查看变量/修改变量) ==================== */
 /* 认证三模式: 管理员 key (任意设备) / 客户 token (仅绑定设备) / 设备签名 (仅自己, 仅查看) */
+/* 操作者身份标签 (审计用): key=管理员, token=账号名, 其余=设备 */
+function monActorLabel($body) {
+    if (isset($body['key']) && strval($body['key']) !== '') return '管理员';
+    if (isset($body['token']) && strval($body['token']) !== '') {
+        $userId = monTokenCheck(strval($body['token']));
+        if ($userId) {
+            $st = dbAcc()->prepare("SELECT username FROM monitor_users WHERE id = ?");
+            if ($st) {
+                $st->bind_param('i', $userId);
+                $st->execute();
+                $r = $st->get_result()->fetch_assoc();
+                $st->close();
+                if ($r) return '账号 ' . strval($r['username']);
+            }
+        }
+        return '账号(未知)';
+    }
+    return '设备';
+}
 function monVarsAuth($body, $write) {
     $cip = clientIp();
     if (isset($body['key']) && strval($body['key']) !== '') {
@@ -1882,7 +2477,7 @@ function monVarsAuth($body, $write) {
 }
 
 function monVarsLoad($uuid) {
-    $st = dbAcc()->prepare("SELECT view_var, edit_var_dev, edit_var, updated_ms FROM monitor_vars WHERE uuid = ?");
+    $st = dbAcc()->prepare("SELECT view_var, edit_var_dev, edit_var, config_var_dev, config_var, updated_ms FROM monitor_vars WHERE uuid = ?");
     if (!$st) return null;
     $st->bind_param('s', $uuid);
     $st->execute();
@@ -1891,41 +2486,192 @@ function monVarsLoad($uuid) {
     return $row;
 }
 
-/* 查看变量组 (只读) + 修改变量内容组 (设备上报, 网页在此基础上修改) + 下发暂存 (网页保存, 设备拉取) */
+/* 查看变量组 (只读) + 修改变量/配置变量内容组 (设备上报, 网页在此基础上修改) + 各自下发暂存 (网页保存, 设备拉取) */
+/* 从数组 JSON 下发内容提取"上次修改"时间戳, 非数组/缺失返回 '' (与客户端 arrApplyServerEdit 同源) */
+function monStampOf($content) {
+    $arr = json_decode(strval($content), true);
+    if (!is_array($arr)) return '';
+    foreach ($arr as $it) {
+        if (is_array($it) && strval(isset($it['name']) ? $it['name'] : '') === '上次修改') {
+            return strval(isset($it['count']) ? $it['count'] : '');
+        }
+    }
+    return '';
+}
+
+/* 变量内容摘要 (审计用): 数组按 "name=count; ..." 压缩, 非数组/解析失败退化为原文截断;
+ * 截断用 PCRE /u 按 UTF-8 字符对齐 (不依赖 mbstring), 非法 UTF-8 兜底字节截断 */
+function monVarsDigest($content, $maxLen = 500) {
+    $s = strval($content);
+    $arr = json_decode($s, true);
+    if (is_array($arr)) {
+        $parts = array(); $total = 0;
+        foreach ($arr as $it) {
+            $p = is_array($it)
+                ? strval(isset($it['name']) ? $it['name'] : '') . '=' . strval(isset($it['count']) ? $it['count'] : '')
+                : strval($it);
+            $total += strlen($p) + 2;
+            if ($total > $maxLen) { $parts[] = '...(截断)'; return implode('; ', $parts); }
+            $parts[] = $p;
+        }
+        $s = implode('; ', $parts);
+    }
+    if (strlen($s) > $maxLen) {
+        $cut = preg_replace('/^(.{0,' . $maxLen . '}).*$/us', '$1...(截断)', $s);
+        $s = ($cut === null) ? substr($s, 0, $maxLen) . '...(截断)' : $cut;
+    }
+    return $s;
+}
+
+/* 新旧数组差异摘要 (审计用): 变更/新增/删除的字段清单, 非数组内容无法按字段对比返回 '';
+ * "上次修改"为闭环机制字段 (每次保存必然刷新), 记录差异时过滤避免噪音 */
+function monVarsDiff($old, $new, $maxItems = 15) {
+    $o = json_decode(strval($old), true);
+    $n = json_decode(strval($new), true);
+    if (!is_array($o) || !is_array($n)) return '';
+    $om = array(); $nm = array();
+    foreach ($o as $it) {
+        if (is_array($it) && isset($it['name']) && strval($it['name']) !== '上次修改') {
+            $om[strval($it['name'])] = strval(isset($it['count']) ? $it['count'] : '');
+        }
+    }
+    foreach ($n as $it) {
+        if (is_array($it) && isset($it['name']) && strval($it['name']) !== '上次修改') {
+            $nm[strval($it['name'])] = strval(isset($it['count']) ? $it['count'] : '');
+        }
+    }
+    $parts = array();
+    foreach ($nm as $k => $v) {
+        if (!array_key_exists($k, $om)) $parts[] = '新增 ' . $k . '=' . $v;
+        elseif ($om[$k] !== $v) $parts[] = $k . ': ' . $om[$k] . '->' . $v;
+    }
+    foreach ($om as $k => $v) {
+        if (!array_key_exists($k, $nm)) $parts[] = '删除 ' . $k;
+    }
+    if (count($parts) > $maxItems) {
+        $parts = array_slice($parts, 0, $maxItems);
+        $parts[] = '...(更多省略)';
+    }
+    return implode('; ', $parts);
+}
+
 function handleMonitorVars($body) {
     if (!rateLimit(clientIp(), 60)) respond(array('success' => false, 'message' => '请求过于频繁'));
     $uuid = monVarsAuth($body, false);
     $row = monVarsLoad($uuid);
+    /* 下发确认闭环: 客户端回传已应用内容的"上次修改"时间戳 (applied 文件锚点),
+     * 与存储内容一致则该组返回空 (停发同内容); 用户保存新内容 => 新时间戳不匹配 => 自动恢复下发;
+     * 非数组内容无时间戳, 客户端锚点存内容 SHA256, 同源哈希比对停发;
+     * 每次请求即时比对, 幂等且零表结构改动 */
+    $editAck = strval(isset($body['editAck']) ? $body['editAck'] : '');
+    $cfgAck = strval(isset($body['configAck']) ? $body['configAck'] : '');
+    $editOut = strval($row ? $row['edit_var'] : '');
+    $cfgOut = strval($row ? $row['config_var'] : '');
+    $editStopped = false;
+    $cfgStopped = false;
+    if ($editOut !== '' && $editAck !== '' &&
+        (monStampOf($editOut) === $editAck || hash('sha256', $editOut) === $editAck)) {
+        $editOut = '';
+        $editStopped = true;
+    }
+    if ($cfgOut !== '' && $cfgAck !== '' &&
+        (monStampOf($cfgOut) === $cfgAck || hash('sha256', $cfgOut) === $cfgAck)) {
+        $cfgOut = '';
+        $cfgStopped = true;
+    }
+    if ($editStopped || $cfgStopped) {
+        /* 去噪: 心跳每轮都会例行确认已应用内容, 同一 ack 锚点只记首次审计,
+         * 设备应用了新下发 (ack 变化) 才记新条目, 避免每 2 分钟刷一条重复确认 */
+        $ackFile = $LOG_DIR . '/ack_' . md5($uuid) . '.json';
+        $lastAck = json_decode(strval(@file_get_contents($ackFile)), true);
+        $curAck = array('edit' => $editAck, 'cfg' => $cfgAck);
+        if ($lastAck !== $curAck) {
+            auditLog('下发确认', array('device' => maskId($uuid), 'by' => '设备', 'edit' => $editStopped ? 1 : 0, 'config' => $cfgStopped ? 1 : 0));
+            @file_put_contents($ackFile, json_encode($curAck), LOCK_EX);
+        }
+    }
     respond(array(
         'success' => true,
         'uuid' => $uuid,
         'view' => strval($row ? $row['view_var'] : ''),
         'devEdit' => strval(isset($row['edit_var_dev']) ? $row['edit_var_dev'] : ''),
-        'edit' => strval($row ? $row['edit_var'] : ''),
+        'edit' => $editOut,
+        'editStopped' => $editStopped,
+        'devConfig' => strval(isset($row['config_var_dev']) ? $row['config_var_dev'] : ''),
+        'config' => $cfgOut,
+        'configStopped' => $cfgStopped,
         'updatedMs' => intval($row ? $row['updated_ms'] : 0),
     ));
 }
 
-/* 修改: 仅写下发暂存 (查看变量/修改变量内容组由设备上报, 网页只读); 内容为原始字符串, 64KB 限;
- * 前置: 设备上报过修改变量内容 (edit_var_dev 非空) 才允许修改下发 */
+/* 修改: 仅写下发暂存 (查看变量/设备上报内容组由设备上报, 网页只读); 内容为原始字符串, 64KB 限;
+ * editVar → 修改变量, configVar → 配置变量, 单发或同发均可;
+ * 前置: 设备上报过对应内容 (dev 列非空) 才允许修改下发 */
+/* 数组下发内容确保带"上次修改"时间戳条目 (闭环依赖: 设备应用后锚点回传此值才停发;
+ * 无该条目则 monStampOf 恒空 => 永不停发 => 状态页一直显示"有下发"); 已有则刷新,
+ * 非数组原样返回 (走内容哈希闭环) */
+function monEnsureStamp($content) {
+    $arr = json_decode(strval($content), true);
+    if (!is_array($arr)) return $content;
+    $now = date('Y-m-d H:i:s');
+    foreach ($arr as $i => $it) {
+        if (is_array($it) && strval(isset($it['name']) ? $it['name'] : '') === '上次修改') {
+            $arr[$i]['count'] = $now;
+            return json_encode($arr, JSON_UNESCAPED_UNICODE);
+        }
+    }
+    $arr[] = array('name' => '上次修改', 'count' => $now);
+    return json_encode($arr, JSON_UNESCAPED_UNICODE);
+}
+
 function handleMonitorSetVars($body) {
     if (!rateLimit(clientIp(), 30)) respond(array('success' => false, 'message' => '请求过于频繁'));
     $uuid = monVarsAuth($body, true);
     $row = monVarsLoad($uuid);
-    if (!$row || trim(strval(isset($row['edit_var_dev']) ? $row['edit_var_dev'] : '')) === '') {
-        respond(array('success' => false, 'message' => '设备尚未上报修改变量内容, 暂不可修改'), 400);
-    }
-    $edit = strval(isset($body['editVar']) ? $body['editVar'] : '');
-    if (strlen($edit) > 65536) respond(array('success' => false, 'message' => '内容超过 64KB 限制'), 400);
-    $st = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, updated_ms) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE edit_var = VALUES(edit_var), updated_ms = VALUES(updated_ms)");
-    if (!$st) respond(array('success' => false, 'message' => '保存失败'), 500);
+    $hasEdit = isset($body['editVar']) && is_string($body['editVar']);
+    $hasCfg = isset($body['configVar']) && is_string($body['configVar']);
+    if (!$hasEdit && !$hasCfg) respond(array('success' => false, 'message' => '缺少修改内容'), 400);
     $empty = '';
     $now = nowMs();
-    $st->bind_param('ssssi', $uuid, $empty, $empty, $edit, $now);
-    $st->execute();
-    $st->close();
-    auditLog('变量修改', array('device' => maskId($uuid), 'len' => strlen($edit)));
-    respond(array('success' => true, 'uuid' => $uuid, 'edit' => $edit));
+    $respEdit = '';
+    $respCfg = '';
+    if ($hasEdit) {
+        if (!$row || trim(strval(isset($row['edit_var_dev']) ? $row['edit_var_dev'] : '')) === '') {
+            respond(array('success' => false, 'message' => '设备尚未上报修改变量内容, 暂不可修改'), 400);
+        }
+        $edit = strval($body['editVar']);
+        if (strlen($edit) > 65536) respond(array('success' => false, 'message' => '内容超过 64KB 限制'), 400);
+        $edit = monEnsureStamp($edit);   /* 数组无"上次修改"则兜底补, 防闭环死锁 */
+        if (strlen($edit) > 65536) respond(array('success' => false, 'message' => '内容超过 64KB 限制'), 400);
+        $st = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, updated_ms) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE edit_var = VALUES(edit_var), updated_ms = VALUES(updated_ms)");
+        if (!$st) respond(array('success' => false, 'message' => '保存失败'), 500);
+        $st->bind_param('ssssssi', $uuid, $empty, $empty, $edit, $empty, $empty, $now);
+        $st->execute();
+        $st->close();
+        auditLog('变量修改', array('device' => maskId($uuid), 'by' => monActorLabel($body), 'len' => strlen($edit),
+            'diff' => monVarsDiff(isset($row['edit_var']) ? $row['edit_var'] : '', $edit),
+            'content' => monVarsDigest($edit)));
+        $respEdit = $edit;
+    }
+    if ($hasCfg) {
+        if (!$row || trim(strval(isset($row['config_var_dev']) ? $row['config_var_dev'] : '')) === '') {
+            respond(array('success' => false, 'message' => '设备尚未上报配置变量内容, 暂不可修改'), 400);
+        }
+        $cfg = strval($body['configVar']);
+        if (strlen($cfg) > 65536) respond(array('success' => false, 'message' => '内容超过 64KB 限制'), 400);
+        $cfg = monEnsureStamp($cfg);   /* 数组无"上次修改"则兜底补, 防闭环死锁 */
+        if (strlen($cfg) > 65536) respond(array('success' => false, 'message' => '内容超过 64KB 限制'), 400);
+        $st = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, updated_ms) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE config_var = VALUES(config_var), updated_ms = VALUES(updated_ms)");
+        if (!$st) respond(array('success' => false, 'message' => '保存失败'), 500);
+        $st->bind_param('ssssssi', $uuid, $empty, $empty, $empty, $empty, $cfg, $now);
+        $st->execute();
+        $st->close();
+        auditLog('配置变量修改', array('device' => maskId($uuid), 'by' => monActorLabel($body), 'len' => strlen($cfg),
+            'diff' => monVarsDiff(isset($row['config_var']) ? $row['config_var'] : '', $cfg),
+            'content' => monVarsDigest($cfg)));
+        $respCfg = $cfg;
+    }
+    respond(array('success' => true, 'uuid' => $uuid, 'edit' => $respEdit, 'config' => $respCfg));
 }
 
 /* 管理员删除设备: 监控密钥认证 (与 setstatus 管理分支同构);
@@ -1983,12 +2729,13 @@ function handleMonitorDeviceDelete($body) {
             $stC->close();
         }
         /* 4. 缩略图 (uuid 已清洗, 无路径穿越风险) */
+        @unlink(__DIR__ . '/mon_thumbs/' . $rowUuid . '.webp');
         @unlink(__DIR__ . '/mon_thumbs/' . $rowUuid . '.jpg');
     }
     /* 3. 设备记录 */
     dbExec("DELETE FROM client_status WHERE " . $where, array($keyVal));
     backupData();
-    auditLog('设备删除', array('device' => maskId($rowUuid !== '' ? $rowUuid : $keyVal)));
+    auditLog('设备删除', array('device' => maskId($rowUuid !== '' ? $rowUuid : $keyVal), 'by' => '管理员'));
     respond(array('success' => true));
 }
 
@@ -2034,9 +2781,11 @@ if ($method === 'POST' && ($path === '/api/verify' || $path === '/api/heartbeat'
 }
 
 /* ---- 监控接口 ---- */
-if ($path === '/api/monitor/report' || $path === '/api/monitor/list' || $path === '/api/monitor/setstatus' || $path === '/api/monitor/thumb' || $path === '/api/monitor/devicedel' || $path === '/api/monitor/vars' || $path === '/api/monitor/setvars' || $path === '/api/monitor/clearcounts') {
+if ($path === '/api/monitor/report' || $path === '/api/monitor/list' || $path === '/api/monitor/setstatus' || $path === '/api/monitor/thumb' || $path === '/api/monitor/devicedel' || $path === '/api/monitor/vars' || $path === '/api/monitor/setvars' || $path === '/api/monitor/clearcounts' || $path === '/api/monitor/audit') {
     if ($method === 'POST' && $path === '/api/monitor/report') handleMonitorReport($body);
     if ($method === 'GET' && $path === '/api/monitor/list') handleMonitorList($query);
+    if ($method === 'GET' && $path === '/api/monitor/audit') handleMonitorAudit($query);
+    if ($method === 'POST' && $path === '/api/monitor/audit') handleMonitorAuditClear($body);
     if ($method === 'POST' && $path === '/api/monitor/setstatus') handleMonitorSetStatus($body);
     if ($method === 'POST' && $path === '/api/monitor/thumb') handleMonitorThumb($body);
     if ($method === 'POST' && $path === '/api/monitor/devicedel') handleMonitorDeviceDelete($body);
@@ -2046,7 +2795,7 @@ if ($path === '/api/monitor/report' || $path === '/api/monitor/list' || $path ==
 }
 
 /* ---- 客户账号接口 ---- */
-if ($path === '/api/monu/register' || $path === '/api/monu/login' || $path === '/api/monu/devices' || $path === '/api/monu/bind' || $path === '/api/monu/unbind' || $path === '/api/monu/logout' || $path === '/api/monu/captcha') {
+if ($path === '/api/monu/register' || $path === '/api/monu/login' || $path === '/api/monu/devices' || $path === '/api/monu/bind' || $path === '/api/monu/unbind' || $path === '/api/monu/logout' || $path === '/api/monu/changepwd' || $path === '/api/monu/captcha') {
     if ($path === '/api/monu/register') {
         if (!monRegLimit($ip)) respond(array('success' => false, 'message' => '注册过于频繁, 请一分钟后再试'), 429);
     } else {
@@ -2056,6 +2805,7 @@ if ($path === '/api/monu/register' || $path === '/api/monu/login' || $path === '
     if ($method === 'POST' && $path === '/api/monu/register') handleMonuRegister($body);
     if ($method === 'POST' && $path === '/api/monu/login') handleMonuLogin($body);
     if ($method === 'POST' && $path === '/api/monu/logout') handleMonuLogout($body);
+    if ($method === 'POST' && $path === '/api/monu/changepwd') handleMonuChangePwd($body);
     if ($method === 'POST' && $path === '/api/monu/bind') handleMonuBind($body);
     if ($method === 'POST' && $path === '/api/monu/unbind') handleMonuUnbind($body);
     if ($method === 'GET' && $path === '/api/monu/devices') handleMonuDevices($query);

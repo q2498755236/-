@@ -868,6 +868,20 @@ function monThumbUpload() {
     return typeof res === 'string' ? res : (res && res.body) || '';
 }
 
+/* 服务端画面状态下发 (缩略图 dHash 对比 + 黑屏检测) 写入输出变量 '画面状态'
+ * 值格式: 正常 | 静止(N秒) | 黑屏(N秒), 业务脚本 auto.getValue('画面状态') 读取判断 */
+function monApplyScreen(rj) {
+    try {
+        var s = rj && rj.screen;
+        if (!s || typeof s !== 'object') return;
+        var txt;
+        if (s.state === 'black') txt = '黑屏(' + Math.max(0, Number(s.black_sec) || 0) + '秒)';
+        else if (s.state === 'static') txt = '静止(' + Math.max(0, Number(s.static_sec) || 0) + '秒)';
+        else txt = '正常';
+        sv('画面状态', txt);
+    } catch (e) {}
+}
+
 /* 缩略图节流入口: 上报动作内调用, 120s 一张; force=true 时跳过节流 (首次必截)
  * 独立开关, 链路内部失败自动放弃本张 */
 function monMaybeThumb(force) {
@@ -882,6 +896,8 @@ function monMaybeThumb(force) {
         var skipped = ok && String(r).indexOf('"skipped":true') >= 0;
         sv('监控缩略图结果', ok ? (skipped ? 'ok (服务端限频跳过)' : 'ok') : (r ? String(r).slice(0, 120) : '截图或编码失败'));
         slog('缩略图: ' + (ok ? (skipped ? '服务端限频内跳过 (图未更新)' : '成功') : (r ? '失败 ' + String(r).slice(0, 60) : '截图或编码失败')));
+        /* 缩略图响应携带最新画面状态 (对比刚完成, 结果最及时) */
+        if (ok && !skipped) { try { monApplyScreen(JSON.parse(String(r))); } catch (eS) {} }
     } catch (e) {}
 }
 
@@ -942,6 +958,8 @@ function monDoAll() {
             if (rj && rj.success) {
                 var st = String(rj.status || '').trim();
                 sv('状态', st === '' ? '在线' : st);
+                /* 服务端画面状态: 随心跳兜底下发 (缩略图响应为主通道) */
+                monApplyScreen(rj);
                 /* 服务端清零指令: 管理员网页下发, 领取即清零本地任务/错误计数, 下次心跳上报 0 */
                 if (rj.resetCmd) {
                     monWrite(MON_TASK_FILE, 'mon_task_count', '0');

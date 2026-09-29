@@ -67,15 +67,16 @@ public class OcrAreaFind extends BaseOcrAction {
                         }
                         String text = item.optString("text", "");
                         if (text.contains(target)) {
-                            int x = item.optInt("x", -1) + l;
-                            int y = item.optInt("y", -1) + t;
-                            int w = item.optInt("w", 0);
-                            int h = item.optInt("h", 0);
-                            out.put(RESULT_FOUND, "true");
-                            out.put(RESULT_RECT, x + "," + y + "," + w + "," + h);
-                            out.put(RESULT_CENTER, (x + w / 2) + "," + (y + h / 2));
-                            found = true;
-                            break;
+                            int[] r = OcrEngine.rectOf(item);
+                            if (r != null) {
+                                int x = r[0] + l;
+                                int y = r[1] + t;
+                                out.put(RESULT_FOUND, "true");
+                                out.put(RESULT_RECT, x + "," + y + "," + r[2] + "," + r[3]);
+                                out.put(RESULT_CENTER, (x + r[2] / 2) + "," + (y + r[3] / 2));
+                                found = true;
+                                break;
+                            }
                         }
                     }
                 }

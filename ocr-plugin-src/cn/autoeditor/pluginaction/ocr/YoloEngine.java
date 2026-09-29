@@ -74,16 +74,17 @@ public final class YoloEngine {
     public static String resultsJson(float[][] dets) {
         JSONArray arr = new JSONArray();
         for (float[] d : dets) {
+            int x = Math.round(d[0] - d[2] / 2);
+            int y = Math.round(d[1] - d[3] / 2);
+            int w = Math.round(d[2]);
+            int h = Math.round(d[3]);
             JSONObject o = new JSONObject();
             try {
                 o.put("cls", className((int) d[4]));
                 o.put("conf", (double) Math.round(d[5] * 1000) / 1000);
-                o.put("x", Math.round(d[0] - d[2] / 2));
-                o.put("y", Math.round(d[1] - d[3] / 2));
-                o.put("w", Math.round(d[2]));
-                o.put("h", Math.round(d[3]));
-                o.put("cx", Math.round(d[0]));
-                o.put("cy", Math.round(d[1]));
+                /* 坐标统一合并字符串: 矩形 = "x,y,w,h", 中心 = "x,y" */
+                o.put("rect", x + "," + y + "," + w + "," + h);
+                o.put("center", Math.round(d[0]) + "," + Math.round(d[1]));
             } catch (Exception ignored) {
             }
             arr.put(o);

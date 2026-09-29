@@ -59,15 +59,14 @@ public class OcrFind extends BaseOcrAction {
                     }
                     String text = item.optString("text", "");
                     if (text.contains(target)) {
-                        int x = item.optInt("x", -1);
-                        int y = item.optInt("y", -1);
-                        int w = item.optInt("w", 0);
-                        int h = item.optInt("h", 0);
-                        out.put(RESULT_FOUND, "true");
-                        out.put(RESULT_RECT, x + "," + y + "," + w + "," + h);
-                        out.put(RESULT_CENTER, (x + w / 2) + "," + (y + h / 2));
-                        found = true;
-                        break;
+                        int[] r = OcrEngine.rectOf(item);
+                        if (r != null) {
+                            out.put(RESULT_FOUND, "true");
+                            out.put(RESULT_RECT, r[0] + "," + r[1] + "," + r[2] + "," + r[3]);
+                            out.put(RESULT_CENTER, (r[0] + r[2] / 2) + "," + (r[1] + r[3] / 2));
+                            found = true;
+                            break;
+                        }
                     }
                 }
             }

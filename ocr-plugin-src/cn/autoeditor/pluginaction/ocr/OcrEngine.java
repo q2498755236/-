@@ -111,4 +111,79 @@ public final class OcrEngine {
         }
         return sb.toString();
     }
+
+    /* 从识别条目提取矩形 [x,y,w,h]: native points 四角点 (上左下右) 转包围盒,
+     * 兼容已给 x/y/w/h 字段的形态; 无有效坐标返回 null */
+    public static int[] rectOf(JSONObject item) {
+        JSONArray pts = item.optJSONArray("points");
+        if (pts != null && pts.length() > 0) {
+            int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE;
+            int maxX = Integer.MIN_VALUE, maxY = Integer.MIN_VALUE;
+            for (int p = 0; p < pts.length(); p++) {
+                JSONArray pt = pts.optJSONArray(p);
+                if (pt == null || pt.length() < 2) {
+                    continue;
+                }
+                int px = pt.optInt(0), py = pt.optInt(1);
+                if (px < minX) minX = px;
+                if (py < minY) minY = py;
+                if (px > maxX) maxX = px;
+                if (py > maxY) maxY = py;
+            }
+            if (minX != Integer.MAX_VALUE) {
+                return new int[]{minX, minY, maxX - minX, maxY - minY};
+            }
+            return null;
+        }
+        return new int[]{item.optInt("x", -1), item.optInt("y", -1),
+                item.optInt("w", 0), item.optInt("h", 0)};
+    }
+
+    /* 识别结果转设备管理系统标准数组格式 [{"name":"文字","count":".."}]:
+     * type 1 data 为纯文本, 按行拆条目, count 置空;
+     * type 2 count = "x,y" (左上角坐标);
+     * type 3 points 四角点转包围盒, count = "x,y,w,h" (兼容 native 已给 x/y/w/h 的形态);
+     * 解析失败返回 null, 由调用方回退原始 data */
+    public static String stdOf(String data, int type) {
+        try {
+            JSONArray out = new JSONArray();
+            if (type == 1) {
+                String[] lines = data.split("\n");
+                for (int i = 0; i < lines.length; i++) {
+                    String line = lines[i].trim();
+                    if (line.isEmpty()) {
+                        continue;
+                    }
+                    JSONObject it = new JSONObject();
+                    it.put("name", line);
+                    it.put("count", "");
+                    out.put(it);
+                }
+            } else {
+                JSONArray arr = new JSONArray(data);
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONObject item = arr.optJSONObject(i);
+                    if (item == null) {
+                        continue;
+                    }
+                    String count = "";
+                    if (type == 2) {
+                        count = item.optInt("x", -1) + "," + item.optInt("y", -1);
+                    } else {
+                        int[] r = rectOf(item);
+                        if (r != null) {
+                            count = r[0] + "," + r[1] + "," + r[2] + "," + r[3];
+                        }
+                    }
+                    JSONObject it = new JSONObject();
+                    it.put("name", item.optString("text", ""));
+                    it.put("count", count);
+                    out.put(it);
+                }
+            }
+            return out.toString();
+        } catch (Exception e) {
+            return null;
+        }
+    }
 }
