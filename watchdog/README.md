@@ -15,6 +15,7 @@
 - **变量下发**: 网页端"修改变量"内容落盘 `/sdcard/.mon_monitor/edit_vars.json`, 供编辑器侧读取
 - **画面冻结检测** (freezeWatch, 默认开): 每 freezeSampleSec (20s) 采样一次目标包前台窗口的无障碍控件树快照 (className/text/desc/bounds 拼接后 FNV-1a 哈希), 连续 freezeThresholdTimes (3) 次无变化判定冻结 -> force-stop + 拉起恢复。豁免条件: 在 overlayPkgs 悬浮窗应用列表 / 目标包不在前台 / 息屏 / 刚拉起宽限期 freezeGraceSec (60s) / 快照取不到 (游戏 SurfaceView 等, 连续 5 次仅告警)。`freezePixelFallback=true` 时快照取不到会改用截屏像素指纹 (中心 4x4 采样点灰度, 需 MediaProjection 授权, selfRevive 拉起后授权失效该通道自动停用)
 - **悬浮窗形态应用支持** (overlayPkgs, UI 可设): 点击器等"拉起后本体在后台仅悬浮窗显示"的应用, 在此列表的包名跳过本地进程判定与冻结检测, 由服务端心跳判定兜底——避免 hidepid 下 ps 看不到进程 + 窗口兜底不可用时无限误拉。旧配置字段 freezeExcludePkg 自动迁移
+- **HTTP 探活** (httpProbePkgs + httpProbePort, 默认 11243): 列表内包名优先探测其本机控制口 (`GET http://127.0.0.1:端口/console`)。编辑器 EditorService 内置 NanoHTTPD, /console 免白名单返回 `{"code":0,"port":11243}`——拿到任何响应体即服务存活 (code!=0 记日志)。探活成功零 shell (完全不触发 AutoX shell 的 Java 崩溃面), 失败/连接拒绝返回 null 回落窗口判定 + ps 原链, 独立于 useShell。适合"进程存在但服务死"的场景 (心跳通道兜底的补充)
 - **自保活**: 主循环/哨兵双线程心跳文件互监控, 主循环僵死连续 2 次触发 selfRevive (新引擎拉起自身, 旧脚本从脚本线程正常 `exit()`)
 - **重启风暴保护**: 连续拉起失败进入指数退避 (10s 起步, 上限 10 分钟), 错误计入服务端共享 error_count
 

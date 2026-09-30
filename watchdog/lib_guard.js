@@ -46,7 +46,11 @@ var DEFAULT_CFG = {
     /* 悬浮窗形态应用包名 (点击器等: 拉起后本体在后台仅悬浮窗显示):
      * 跳过本地进程判定与冻结检测, 由服务端心跳判定兜底。
      * (旧字段 freezeExcludePkg 自动迁移) */
-    overlayPkgs: []
+    overlayPkgs: [],
+    /* HTTP 探活: 列表内包名优先探测本机控制端口 (编辑器 EditorService
+     * 内置 NanoHTTPD 11243/console, 免白名单), 通=存活, 不通走原判定链 */
+    httpProbePort: 11243,
+    httpProbePkgs: []
 };
 
 var _cfg = JSON.parse(JSON.stringify(DEFAULT_CFG));
@@ -163,6 +167,7 @@ function loadConfig() {
         if (!Array.isArray(_cfg.watchApps)) _cfg.watchApps = [];
         if (!Array.isArray(_cfg.watchScripts)) _cfg.watchScripts = [];
         if (!Array.isArray(_cfg.overlayPkgs)) _cfg.overlayPkgs = [];
+        if (!Array.isArray(_cfg.httpProbePkgs)) _cfg.httpProbePkgs = [];
         _cfg.watchApps = _sanitizeTargets(_cfg.watchApps, 'pkg');
         _cfg.watchScripts = _sanitizeTargets(_cfg.watchScripts, 'path');
         var ov = [];
@@ -171,6 +176,14 @@ function loadConfig() {
             if (s) ov.push(s);
         }
         _cfg.overlayPkgs = ov;
+        var hp = [];
+        for (var hi = 0; hi < _cfg.httpProbePkgs.length; hi++) {
+            var hs = String(_cfg.httpProbePkgs[hi] || '').trim();
+            if (hs) hp.push(hs);
+        }
+        _cfg.httpProbePkgs = hp;
+        var portN = parseInt(_cfg.httpProbePort, 10);
+        _cfg.httpProbePort = (portN > 0 && portN < 65536) ? portN : 11243;
         /* 旧字段迁移: freezeExcludePkg -> overlayPkgs (新版配置并存时以 overlayPkgs 为准) */
         if (j.freezeExcludePkg !== undefined && j.overlayPkgs === undefined) {
             _cfg.overlayPkgs = Array.isArray(j.freezeExcludePkg) ? j.freezeExcludePkg : [];
@@ -249,11 +262,35 @@ function isOverlay(pkg) {
     return false;
 }
 
+/* HTTP 探活: httpProbePkgs 列表内的包优先探测本机控制端口。
+ * 编辑器 EditorService 内置 NanoHTTPD (默认 11243, GET /console 免白名单),
+ * 拿到任何响应体即服务存活 (code!=0 时记日志); 连接失败返回 null 走原判定链。
+ * 独立于 useShell, 关 shell 也能探。 */
+function _httpProbeAlive(pkg) {
+    if (!_cfg.httpProbePkgs || _cfg.httpProbePkgs.indexOf(pkg) < 0) return null;
+    try {
+        if (typeof http === 'undefined' || typeof http.get !== 'function') return null;
+        var r = http.get('http://127.0.0.1:' + (_cfg.httpProbePort || 11243) + '/console', { timeout: 3000 });
+        var b = r && r.body;
+        var body = !b ? '' : (typeof b === 'string' ? b : (typeof b.string === 'function' ? String(b.string()) : String(b)));
+        if (body) {
+            if (body.indexOf('"code":0') < 0) {
+                log('httpProbe ' + pkg + ' 响应异常: ' + body.slice(0, 80));
+            }
+            return true;
+        }
+    } catch (e) {
+        errThrottled('httpProbe ' + pkg + ' 失败: ' + String((e && e.message) || e).slice(0, 100));
+    }
+    return null;
+}
+
 /* 返回 true 存活 / false 未发现进程 / null 检测不可用 (useShell 关闭或 shell 失败)
- * 窗口判定优先 (零 shell, 不触发 AutoX shell 的 Java 崩溃面): 有窗口即活,
- * 覆盖悬浮窗形态应用。窗口非"活"时才用 ps 兜底最终判定。
+ * 判定顺序: HTTP 探活 -> 窗口判定 (零 shell, 不触发 AutoX shell 的 Java 崩溃面,
+ * 有窗口即活, 覆盖悬浮窗形态应用) -> ps 兜底最终判定。
  * ps 用普通 shell (root 模式在无 root 设备会触发 AutoX 框架线程 NPE) */
 function processAlive(pkg) {
+    if (_httpProbeAlive(pkg) === true) return true;
     if (!_cfg.useShell || !_proto) return null;
     var w = windowExists(pkg);
     if (w === true) return true;

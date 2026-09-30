@@ -27,5 +27,9 @@
   "freezeThresholdTimes": 3,
   "freezeGraceSec": 60,
   "freezePixelFallback": false,
-  "overlayPkgs": []
+  "overlayPkgs": [],
+  "httpProbePort": 11243,
+  "httpProbePkgs": [
+    "cn.autoeditor.mobileeditor"
+  ]
 }
