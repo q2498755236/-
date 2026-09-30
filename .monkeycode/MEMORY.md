@@ -79,4 +79,15 @@ Entries discovered by the Agent during task execution should follow this format:
   - .htaccess 路由核心：RewriteCond !-f !-d + RewriteRule ^ index.php [QSA,L]（非真实文件统一进 index.php 内部路由）；改 .htaccess 前先备份线上原版
   - 线上 carddata 状态目录回退在站内 htdocs/carddata/state/（站点外目录不可写），HTTP 已被 .htaccess 拦截（carddata 403）；FTP 清理状态文件用"上传临时 PHP 脚本→curl 触发→脚本自删"模式
   - 管理员防爆破 (admin_fail 3 次锁 30 分钟) 会把测试脚本负向用例计入失败：连续跑多轮 test_client 可能触发 429 封禁，需 FTP 清 carddata/state/admin_fail.json 后重测
-  - 线上 REMOTE_ADDR 直传真实公网 IP（XFF 同值），免费主机偶发 http=0 超时属正常抖动，重跑即可
+   - 线上 REMOTE_ADDR 直传真实公网 IP（XFF 同值），免费主机偶发 http=0 超时属正常抖动，重跑即可
+
+[Project Knowledge Summary]
+- Date: 2026-09-30
+- Context: Discovered by Agent while implementing 灵眸编辑器复刻层 (lingmou/editor/) 与看门狗 httpProbe
+- Category: Build Methods | Testing Methods
+- Instructions:
+  - 灵眸编辑器复刻冒烟: node /tmp/opencode/test_editor.js（66 项，含真实 最新.auto 装载与真实插件 12+34=46 全链路）；看门狗回归: node /tmp/opencode/test_watchdog.js（116 项）
+  - 打包交付: cd /workspace && zip -r watchdog.zip watchdog/ -x "watchdog/.git*"；灵眸 zip 用 zip -r lingmou-editor.zip lingmou/ -x "lingmou/.git*"（-j 会拍平目录路径，勿用）
+  - .auto 内插件 uuid 以 ZIP 内文件名为权威（气泡插件 JSON 内 mUUID 与文件名不一致，任务 T29 引用按文件名）；插件目录为 UTF-8 flag 的"插件/我的/<uuid>.json"，Java ZipInputStream 传 GBK charset 仅对无 flag entry 生效
+  - 编辑器复刻语义推断项（CALIBRATE）清单在 lingmou/editor/README.md，真机对照后回填
+  - node 冒烟绕过 runtime.start() 时需手动 vars.loadList() 与 host.loadAll()（白盒测试顺序）

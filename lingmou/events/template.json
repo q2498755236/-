@@ -1,0 +1,6 @@
+{
+  "name": "示例事件",
+  "scene": "battle",
+  "priority": 500,
+  "cooldown": 3000
+}
