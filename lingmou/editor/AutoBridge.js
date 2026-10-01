@@ -98,6 +98,19 @@ AutoBridge.prototype.launchApp = function(name) {
     }, [name]);
 };
 
+/** 强制停止应用 (launch_type=4 重启语义: 先强停再拉起)。 */
+AutoBridge.prototype.forceStopApp = function(pkg) {
+    var self = this;
+    return this._op("forceStopApp", function() {
+        var n = _str(pkg);
+        if (typeof shell === "function") {
+            try { shell("am force-stop " + n); return true; } catch (eS) { self.logger("[E] force-stop 异常: " + eS, "error"); return false; }
+        }
+        self.logger("[E] forceStopApp 不可用: " + n, "error");
+        return false;
+    }, [pkg]);
+};
+
 AutoBridge.prototype.shell = function(cmd, input) {
     var self = this;
     return this._op("shell", function() {

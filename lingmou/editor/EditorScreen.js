@@ -130,7 +130,16 @@ EditorScreen.prototype.importTask = function(fileName, card) {
     this._runtime = new EditorRuntime({
         bridge: bridge, host: host, task: task,
         image: this.app.imageService,
-        logger: bridge.logger
+        logger: bridge.logger,
+        // 分辨率适配: 运行设备实际分辨率 (任务基准取 model.ori_infos[0])
+        screenSize: function() {
+            try {
+                if (typeof device !== "undefined" && device.width && device.height) {
+                    return { width: Number(device.width), height: Number(device.height) };
+                }
+            } catch (eD) {}
+            return null;
+        }
     });
     this._refreshInfo();
     this.refresh();

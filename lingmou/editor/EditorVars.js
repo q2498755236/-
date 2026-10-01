@@ -39,7 +39,9 @@ EditorVars.prototype._add = function(raw) {
         name: String(raw.name || ""),
         type: raw.type,
         value: _coerce(raw.value, /^S/.test(String(raw.name || ""))),
+        init: _coerce(raw.value, /^S/.test(String(raw.name || ""))),
         crops: raw.crops || null,
+        conditionValues: Array.isArray(raw.condition_values) && raw.condition_values.length ? raw.condition_values : null,
         isLocal: !!raw.is_local,
         isConfig: !!raw.is_config,
         isGlobal: !!raw.is_global
@@ -83,6 +85,30 @@ EditorVars.prototype.set = function(key, value) {
     }
     rec.value = _coerce(value, /^S/.test(rec.name));
     return true;
+};
+
+/** 重置变量为初始值 (动作 type=6: var_id + cover)。运行期注册变量无初值则清空。 */
+EditorVars.prototype.reset = function(key) {
+    var rec = this._byName[key] || this._byId[key];
+    if (!rec) return false;
+    rec.value = rec.init === undefined ? "" : rec.init;
+    return true;
+};
+
+/** 全部变量重置为初始值 (动作 type=9: exclude 列表中的变量保留, 按 id 或名匹配)。
+ * 跨局计数/配置类变量由 exclude 保留, 其余随局重置。 */
+EditorVars.prototype.resetAll = function(excludeKeys) {
+    var ex = {};
+    var list = Array.isArray(excludeKeys) ? excludeKeys : [];
+    for (var i = 0; i < list.length; i++) ex[String(list[i])] = true;
+    var n = 0;
+    for (var j = 0; j < this._order.length; j++) {
+        var rec = this._order[j];
+        if (ex[rec.id] || (rec.name && ex[rec.name])) continue;
+        rec.value = rec.init === undefined ? "" : rec.init;
+        n++;
+    }
+    return n;
 };
 
 /** 全部变量导出 (调试/持久化)。 */

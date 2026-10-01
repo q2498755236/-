@@ -4,9 +4,9 @@
  *   - loop_mode=2 循环模式, loop_interval 毫秒为轮询间隔
  *   - scene.scene_event 为场景触发器 (界面标识找图条件), 命中后执行
  *     scene_event.action_list 并遍历 event_list (条件组 -> 动作序列)
- *   - 条件 item type: 1找图 2变量比较 3变量存在 5嵌套组 7找色计数
- *   - 动作 type: 1取变量 2找图点击 3变量运算 4找图赋值 11按键 12自定义代码
- *     14随机数 16启动应用 22手势 29 JS插件调用
+ *   - 条件 item type: 1找图 2变量比较 3变量存在 4变量不存在 5嵌套组 7找色计数
+ *   - 动作 type: 1取变量 2找图点击 3变量运算 4找图赋值 6变量重置 7多指手势
+ *     9全部变量重置 11按键 12自定义代码 14随机数 16启动应用 22手势 29 JS插件调用
  * 语义不确定处按最合理推断实现并标注 CALIBRATE, 待真机对照校准。
  */
 "use strict";
@@ -19,10 +19,48 @@ function EditorRuntime(opts) {
     this.image = opts.image || null;       // 灵眸 ImageService
     this.logger = typeof opts.logger === "function" ? opts.logger : function() {};
     this.stopOnError = !!opts.stopOnError;
+    this._screenSizeFn = typeof opts.screenSize === "function" ? opts.screenSize : null;
     this.running = false;
     this._stopFlag = false;
+    this._scale = null;                    // 分辨率适配 (惰性): {s, ox, oy}
     this._stats = { loops: 0, scenesHit: 0, actionsRun: 0, errors: 0 };
 }
+
+/* ================= 分辨率适配 (adapter, CALIBRATE) ================= */
+
+/** 任务基准分辨率 (ori_infos[0], 真实任务 1280x720) vs 运行设备分辨率。
+ * adapter=1 按等比 min 缩放 + 居中偏移; 同分辨率零换算。 */
+EditorRuntime.prototype._scaleInfo = function() {
+    if (this._scale) return this._scale;
+    var ori = null;
+    var oi = this.task && this.task.model && this.task.model.ori_infos;
+    if (Array.isArray(oi) && oi[0] && Number(oi[0].width) > 0) {
+        ori = { w: Number(oi[0].width), h: Number(oi[0].height) };
+    }
+    var dev = this._screenSizeFn ? this._screenSizeFn() : null;
+    if (!ori || !dev || !(dev.width > 0) || !(dev.height > 0) ||
+        (dev.width === ori.w && dev.height === ori.h)) {
+        this._scale = { s: 1, ox: 0, oy: 0 };
+        return this._scale;
+    }
+    var sx = dev.width / ori.w, sy = dev.height / ori.h;
+    var s = Math.min(sx, sy);
+    this._scale = {
+        s: s,
+        ox: Math.round((dev.width - ori.w * s) / 2),
+        oy: Math.round((dev.height - ori.h * s) / 2)
+    };
+    this.logger("[适配] 任务 " + ori.w + "x" + ori.h + " -> 设备 " + dev.width + "x" + dev.height +
+        " (s=" + s.toFixed(3) + ")");
+    return this._scale;
+};
+
+/** 任务坐标系点 -> 设备坐标 (同分辨率原样返回)。 */
+EditorRuntime.prototype._fitPoint = function(x, y) {
+    var sc = this._scaleInfo();
+    if (sc.s === 1 && !sc.ox && !sc.oy) return { x: x, y: y };
+    return { x: Math.round(x * sc.s) + sc.ox, y: Math.round(y * sc.s) + sc.oy };
+};
 
 EditorRuntime.prototype.stopRequested = function() { return this._stopFlag; };
 
@@ -157,9 +195,10 @@ EditorRuntime.prototype.evalGroup = function(group, quick) {
 EditorRuntime.prototype.evalItem = function(it, quick) {
     try {
         var t = Number(it.type);
-        if (t === 1) return this._condFindImage(it);
+        if (t === 1) return this._condFindImage(it, quick);
         if (t === 2) return this._condVarCompare(it);
         if (t === 3) return this._condVarExists(it);
+        if (t === 4) return !this._condVarExists(it);
         if (t === 7) return this._condColorCount(it);
         this.logger("[W] 未知条件类型 " + t);
         return false;
@@ -170,15 +209,17 @@ EditorRuntime.prototype.evalItem = function(it, quick) {
     }
 };
 
-/** type=1 找图存在: state 1=存在 0=不存在; timeout 内轮询 (CALIBRATE: 轮询粒度 200ms)。 */
-EditorRuntime.prototype._condFindImage = function(it) {
-    var want = Number(it.state) !== 0;
+/** type=1 找图存在: state 1=存在 2=不存在 (真实任务两态并现, 0 兼容旧推断=存在;
+ * CALIBRATE); timeout 内轮询 (轮询粒度 200ms)。quick=true (场景触发器, loop_interval
+ * 节奏轮询) 忽略 timeout 单次判定——等图语义留在事件条件, 否则触发器卡死主循环。 */
+EditorRuntime.prototype._condFindImage = function(it, quick) {
+    var want = Number(it.state) !== 2;
     var img = this.task ? this.task.imageFile(it.image_id) : null;
     if (!img) {
         this.logger("[W] 模板图缺失: " + it.image_id);
         return !want;
     }
-    var timeout = Number(it.timeout) || 0;
+    var timeout = quick ? 0 : (Number(it.timeout) || 0);
     var deadline = Date.now() + Math.min(timeout, 30000);
     var hit = null;
     var self = this;
@@ -192,14 +233,25 @@ EditorRuntime.prototype._condFindImage = function(it) {
     return !want;
 };
 
-EditorRuntime.prototype._findImageHit = function(img) {
-    if (!this.image) return null;
-    var r = this.image.findImage(img.path, null, img.sim);
-    if (r && r.ok && r.x !== undefined) return { x: r.x, y: r.y };
+EditorRuntime.prototype._findImageHit = function(img, opts) {
+    if (!this.image || typeof this.image.findTemplate !== "function") return null;
+    var p = { path: img.path, threshold: img.sim, region: opts && opts.region };
+    // type=4 二值化参数透传 (binarization/binarization_type/threshold/filter_color/filter_sim),
+    // ImageService 现仅消费 path/threshold/region, 其余字段待扩展 (CALIBRATE)
+    if (opts) {
+        if (opts.binarization !== undefined) p.binarization = opts.binarization;
+        if (opts.binarization_type !== undefined) p.binarization_type = opts.binarization_type;
+        if (opts.bin_threshold !== undefined) p.bin_threshold = opts.bin_threshold;
+        if (opts.filter_color !== undefined) p.filter_color = opts.filter_color;
+        if (opts.filter_sim !== undefined) p.filter_sim = opts.filter_sim;
+    }
+    var r = this.image.findTemplate(p);
+    if (r && r.pass && r.point) return { x: r.point.cx, y: r.point.cy, box: r.point };
     return null;
 };
 
-/** type=2 变量比较 (CALIBRATE state 枚举): 0等于 1不等 2包含 3不包含 4大于 5小于。 */
+/** type=2 变量比较 (CALIBRATE state 枚举): 0等于 1不等 2包含 3不包含 4大于 5小于
+ * 6大于等于 (真实任务出现 state=6, 按 UI 枚举顺序补齐)。 */
 EditorRuntime.prototype._condVarCompare = function(it) {
     var left = this.bridge.vars ? this.bridge.vars.get(String(it.variable_id)) : undefined;
     var lv = left === undefined ? "" : String(left);
@@ -215,6 +267,7 @@ EditorRuntime.prototype._condVarCompare = function(it) {
         case 3: return lv.indexOf(rv) < 0;
         case 4: return Number(lv) > Number(rv);
         case 5: return Number(lv) < Number(rv);
+        case 6: return Number(lv) >= Number(rv);
         default:
             this.logger("[W] 变量比较未知 state " + s + " (CALIBRATE)");
             return lv === rv;
@@ -227,17 +280,23 @@ EditorRuntime.prototype._condVarExists = function(it) {
     return v !== undefined && v !== null && String(v) !== "";
 };
 
-/** type=7 找色计数: 区域(search_id 变量值 "x,y,w,h")内找色(color_id 变量值 #RRGGBB),
- * 命中写 count_id 变量 1/0 (CALIBRATE: 计数粒度)。state=8 待校准。 */
+/** type=7 找色计数: search_id 变量值 "x,y,w,h" 区域内找 color_list 定义色
+ * (color_id -> colorDef, 负数 int 取低 24 位转 #RRGGBB), 命中写 count_id 变量 1/0。
+ * color_list.sim (0~1 相似度) -> findColorHere 色差 threshold = (1-sim)*255 (CALIBRATE)。
+ * state=8 语义待校准 (真实任务 1 处)。 */
 EditorRuntime.prototype._condColorCount = function(it) {
     var regionStr = this.bridge.vars ? this.bridge.vars.get(String(it.search_id)) : "";
-    var colorStr = this.bridge.vars ? this.bridge.vars.get(String(it.color_id)) : "";
+    var def = this.task ? this.task.colorDef(String(it.color_id)) : null;
     var hit = 0;
-    if (this.image && colorStr) {
-        var region = AutoBridgeMod.parseRegion(regionStr);
-        var rect = region ? [region.x, region.y, region.w, region.h] : null;
-        var r = this.image.findColor(String(colorStr), rect);
-        if (r && r.ok) hit = 1;
+    if (def && this.image && typeof this.image.findColorHere === "function") {
+        var rgb = Number(def.color) & 0xFFFFFF;
+        var hex = "#" + ("000000" + rgb.toString(16)).slice(-6);
+        var sim = Number(def.sim);
+        var p = { color: hex };
+        if (isFinite(sim) && sim > 0 && sim < 1) p.threshold = Math.round((1 - sim) * 255);
+        if (regionStr) p.region = String(regionStr);
+        var r = this.image.findColorHere(p);
+        if (r && r.pass) hit = 1;
     }
     if (it.count_id && this.bridge.vars) this.bridge.vars.set(String(it.count_id), hit);
     return hit > 0;
@@ -275,6 +334,9 @@ EditorRuntime.prototype.execAction = function(a) {
             case 2: return this._actFindClick(a);
             case 3: return this._actVarCalc(a);
             case 4: return this._actFindAssign(a);
+            case 6: return this._actVarReset(a);
+            case 7: return this._actMultiGesture(a);
+            case 9: return this._actResetAll(a);
             case 11: return this._actKey(a);
             case 12: return this._actJsCode(a);
             case 14: return this._actRandom(a);
@@ -298,7 +360,8 @@ EditorRuntime.prototype._actClickVar = function(a) {
     var v = this.bridge.vars ? this.bridge.vars.get(String(a.var_id)) : undefined;
     var region = AutoBridgeMod.parseRegion(v);
     if (!region) return { ok: false, message: "坐标变量非法: " + v };
-    var x = region.x + Math.floor(region.w / 2), y = region.y + Math.floor(region.h / 2);
+    var pt = this._fitPoint(region.x + Math.floor(region.w / 2), region.y + Math.floor(region.h / 2));
+    var x = pt.x, y = pt.y;
     var press = Number(a.press_time) || 0;
     if (press > 0) {
         if (typeof swipe === "function") swipe(x, y, x, y, press);
@@ -322,6 +385,8 @@ EditorRuntime.prototype._actFindClick = function(a) {
         x += Math.floor(Math.random() * region.w);
         y += Math.floor(Math.random() * region.h);
     }
+    var fpt = this._fitPoint(x, y);
+    x = fpt.x; y = fpt.y;
     var times = Math.max(1, Number(a.click_times) || 1);
     var press = Number(a.press_time) || 0;
     var gap = Number(a.interval) || 0;
@@ -364,15 +429,85 @@ EditorRuntime.prototype._actVarCalc = function(a) {
     return { ok: true };
 };
 
-/** type=4 找图赋值: search_id 引用 image_list, 命中坐标写 var_id, 格式 "x,y" (CALIBRATE)。 */
+/** 动作二值化参数 -> findImageHit opts (type=4 找图赋值 32 处全带; type=2 无)。 */
+EditorRuntime.prototype._binOpts = function(a) {
+    if (!a || a.binarization === undefined) return null;
+    return {
+        binarization: a.binarization,
+        binarization_type: a.binarization_type,
+        bin_threshold: a.threshold,
+        filter_color: a.filter_color,
+        filter_sim: a.filter_sim
+    };
+};
+
+/** type=4 变量图找图赋值: 模板 = search_id 变量绑定的 crops (变量面板截图,
+ * 真实任务 32/32 全绑定; 非动作 image_id), 命中坐标写 var_id "x,y" (CALIBRATE)。
+ * 二值化参数 (binarization/threshold/binarization_type/filter_color/filter_sim) 经
+ * opts 透传 findTemplate, ImageService 现仅消费 path/threshold/region, 其余待扩展。 */
 EditorRuntime.prototype._actFindAssign = function(a) {
-    var img = this.task ? this.task.imageFile(a.search_id) : null;
-    if (!img) return { ok: false, message: "模板图缺失: " + a.search_id };
-    var hit = this._findImageHit(img);
+    var tpl = this.task ? this.task.cropImage(a.search_id) : null;
+    if (!tpl) return { ok: false, message: "变量模板图缺失: " + a.search_id };
+    var hit = this._findImageHit(tpl, this._binOpts(a));
     if (hit && this.bridge.vars) {
         this.bridge.vars.set(String(a.var_id), hit.x + "," + hit.y);
     }
     return { ok: !!hit, message: hit ? "" : "未找到目标图" };
+};
+
+/** type=6 变量重置: var_id 变量恢复为 var_list 初始值 (证据: 目标为运行时图色变量,
+ * 重开流程时清掉上局状态)。cover 字段语义未定 (CALIBRATE), 均执行重置。 */
+EditorRuntime.prototype._actVarReset = function(a) {
+    if (!this.bridge.vars) return { ok: false, message: "变量表不可用" };
+    var ok = this.bridge.vars.reset(String(a.var_id));
+    this.logger("[重置] 变量 " + a.var_id + (ok ? "" : " (未注册)"));
+    return { ok: true };
+};
+
+/** type=9 全部变量重置: 除 exclude 清单 (id 或名) 外全部恢复初始值。
+ * 证据: exclude 为跨局计数/配置变量 ("总过关次数"等), 重开一局时其余状态清零。 */
+EditorRuntime.prototype._actResetAll = function(a) {
+    if (!this.bridge.vars) return { ok: false, message: "变量表不可用" };
+    var n = this.bridge.vars.resetAll(a.exclude || []);
+    this.logger("[重置] 全部变量 (保留 " + (a.exclude || []).length + ", 重置 " + n + ")");
+    return { ok: true };
+};
+
+/** type=7 多指手势: var_list 坐标变量 (运行时由找图赋值写入 "x,y[,w,h]") +
+ * time_list 每指 {press_time 按下ms, slide_time 保持秒}。无滑动终点字段 (CALIBRATE),
+ * 按"各指并发按下 press_time ms 后保持 slide_time 秒抬起"实现: AutoX gestures
+ * 多指 API 优先, 缺失退化为逐指原地点按。 */
+EditorRuntime.prototype._actMultiGesture = function(a) {
+    var ids = Array.isArray(a.var_list) ? a.var_list : [];
+    var times = Array.isArray(a.time_list) ? a.time_list : [];
+    if (!ids.length) return { ok: false, message: "手势坐标变量为空" };
+    var vars = this.bridge.vars;
+    var paths = [];
+    for (var i = 0; i < ids.length; i++) {
+        var region = AutoBridgeMod.parseRegion(vars ? vars.get(String(ids[i])) : null);
+        if (!region) return { ok: false, message: "坐标变量非法: " + ids[i] };
+        var cpt = this._fitPoint(region.x + Math.floor(region.w / 2), region.y + Math.floor(region.h / 2));
+        var tm = times[i] || {};
+        var press = Number(tm.press_time) || 0;
+        var hold = Math.max(50, Math.round((Number(tm.slide_time) || 0) * 1000));
+        paths.push({ x: cpt.x, y: cpt.y, ms: Math.max(press, hold) });
+    }
+    var okAny = false;
+    if (typeof gestures === "function") {
+        var gs = [];
+        for (var j = 0; j < paths.length; j++) {
+            gs.push([[paths[j].x, paths[j].y], [paths[j].x, paths[j].y, paths[j].ms]]);
+        }
+        try { gestures.apply(null, gs); okAny = true; } catch (eG) { okAny = false; }
+    }
+    if (!okAny && typeof swipe === "function") {
+        for (var k = 0; k < paths.length; k++) {
+            swipe(paths[k].x, paths[k].y, paths[k].x, paths[k].y, paths[k].ms);
+        }
+        okAny = true;
+    }
+    this.logger("[手势] " + paths.length + " 指 " + (okAny ? "(gestures)" : "(swipe 退化)"));
+    return { ok: okAny, message: okAny ? "" : "手势 API 不可用" };
 };
 
 /** type=11 按键 (CALIBRATE 数字枚举): 1返回 2主页 3最近任务; 兼容字符串。 */
@@ -403,6 +538,12 @@ EditorRuntime.prototype._actRandom = function(a) {
 
 EditorRuntime.prototype._actLaunch = function(a) {
     var pkg = a.app_package || a.appName;
+    var lt = Number(a.launch_type) || 2;
+    // launch_type=4 (真实任务"顶号重登"流程) = 重启语义: 先 force-stop 再拉起 (CALIBRATE)
+    if (lt === 4 && typeof this.bridge.forceStopApp === "function") {
+        this.bridge.forceStopApp(pkg);
+        this.logger("[启动] 强停后重启 " + pkg);
+    }
     var ok = this.bridge.launchApp(pkg);
     return { ok: ok, message: ok ? "" : "启动失败: " + pkg };
 };
@@ -431,8 +572,9 @@ EditorRuntime.prototype._actGesture = function(a) {
     return { ok: true };
 };
 
-/** type=29 JS插件调用: action_inputs {action_arg -> action_varvalue(变量id/字面量)}。
- * 插件结果经 auto.setValue 已写回变量。 */
+/** type=29 JS插件调用: action_inputs {action_arg -> action_varvalue(变量id/字面量)},
+ * action_optioninputs {action_arg -> action_option(选项类参数: 复选/下拉)}——两列表
+ * 并入同一参数上下文。插件结果经 auto.setValue 已写回变量。 */
 EditorRuntime.prototype._actPlugin = function(a) {
     if (!this.host) return { ok: false, message: "插件宿主未初始化" };
     var params = {};
@@ -440,6 +582,11 @@ EditorRuntime.prototype._actPlugin = function(a) {
     for (var i = 0; i < inputs.length; i++) {
         var inp = inputs[i];
         if (inp && inp.action_arg) params[String(inp.action_arg)] = inp.action_varvalue;
+    }
+    var opts = Array.isArray(a.action_optioninputs) ? a.action_optioninputs : [];
+    for (var j = 0; j < opts.length; j++) {
+        var op = opts[j];
+        if (op && op.action_arg) params[String(op.action_arg)] = op.action_option;
     }
     var r = this.host.runAction(String(a.uuid), String(a.action_name), params);
     if (!r.ok) {

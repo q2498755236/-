@@ -130,9 +130,22 @@ AutoTask.prototype.parse = function(autoPath, tasksRoot) {
         for (var k = 0; k < gList.length; k++) {
             if (gList[k] && gList[k].id) gestureMap[String(gList[k].id)] = gList[k];
         }
+        // color_list: id -> {name, color(int 负数 ARGB), sim} (找色计数条件 type=7 引用)
+        var colorMap = {};
+        var cList = Array.isArray(model.color_list) ? model.color_list : [];
+        for (var k2 = 0; k2 < cList.length; k2++) {
+            if (cList[k2] && cList[k2].id) colorMap[String(cList[k2].id)] = cList[k2];
+        }
         this._imageMap = imageMap;
         this._fileMap = fileMap;
         this._gestureMap = gestureMap;
+        this._colorMap = colorMap;
+        var varMap = {};
+        var vList = Array.isArray(model.var_list) ? model.var_list : [];
+        for (var k3 = 0; k3 < vList.length; k3++) {
+            if (vList[k3] && vList[k3].id) varMap[String(vList[k3].id)] = vList[k3];
+        }
+        this._varById = varMap;
         this.dir = outDir;
         this.model = model;
         this.pluginDefs = uz.pluginDefs;
@@ -160,6 +173,30 @@ AutoTask.prototype.gestureGroup = function(gid) {
     return (this._gestureMap && this._gestureMap[String(gid)]) || null;
 };
 
+/** color_id -> 颜色定义 {name, color(int 负数 ARGB), sim:"0.8"} 或 null。 */
+AutoTask.prototype.colorDef = function(colorId) {
+    return (this._colorMap && this._colorMap[String(colorId)]) || null;
+};
+
+/** var_id -> 变量绑定模板图 {path, rect, screenW, screenH} 或 null。
+ * type=4 找图赋值的模板来自变量 crops (变量面板截图: ori 原图文件 + rect 裁剪区),
+ * 非动作 image_id (image_list)。fileMap 键兼容 parse("image/x.png") 与
+ * loadFromDir("x.png") 两种形态。 */
+AutoTask.prototype.cropImage = function(varId) {
+    var rec = this._varById ? this._varById[String(varId)] : null;
+    var c = rec && Array.isArray(rec.crops) && rec.crops[0];
+    if (!c || !c.ori) return null;
+    var path = (this._fileMap && (this._fileMap[c.ori] || this._fileMap["image/" + c.ori])) || null;
+    if (!path) return null;
+    var si = c.screen_info || {};
+    return {
+        path: path,
+        rect: c.rect || "",
+        screenW: Number(si.width) || 0,
+        screenH: Number(si.height) || 0
+    };
+};
+
 /** node 冒烟入口: 从已解包目录装载 (parse 的内存版)。
  * io: {readFile(path)->string|Buffer, listDir(dir)->[names]}。 */
 AutoTask.prototype.loadFromDir = function(dir, io) {
@@ -185,6 +222,11 @@ AutoTask.prototype.loadFromDir = function(dir, io) {
     for (var k = 0; k < gList.length; k++) {
         if (gList[k] && gList[k].id) gestureMap[String(gList[k].id)] = gList[k];
     }
+    var colorMap = {};
+    var cList = Array.isArray(model.color_list) ? model.color_list : [];
+    for (var k2 = 0; k2 < cList.length; k2++) {
+        if (cList[k2] && cList[k2].id) colorMap[String(cList[k2].id)] = cList[k2];
+    }
     this.dir = dir;
     this.model = model;
     // node 路径: 插件 defs 由调用方读取后传入 loadFromDir 的 io.pluginDefs 或后续 setPluginDefs
@@ -192,6 +234,13 @@ AutoTask.prototype.loadFromDir = function(dir, io) {
     this._imageMap = imageMap;
     this._fileMap = fileMap;
     this._gestureMap = gestureMap;
+    this._colorMap = colorMap;
+    var varMap = {};
+    var vList = Array.isArray(model.var_list) ? model.var_list : [];
+    for (var k3 = 0; k3 < vList.length; k3++) {
+        if (vList[k3] && vList[k3].id) varMap[String(vList[k3].id)] = vList[k3];
+    }
+    this._varById = varMap;
     return { ok: true, dir: dir, model: model, pluginDefs: [], message: "" };
 };
 
