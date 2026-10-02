@@ -1280,7 +1280,14 @@ function handleMonitorReport($body) {
     $st->execute();
     $row = $st->get_result()->fetch_assoc();
     $st->close();
-    respond(array('success' => true, 'timestamp' => intval($now / 1000), 'status' => strval($row['status'])));
+    /* 画面静止秒: 缩略图最后内容变化距今秒数 (内容不变不落盘 → mtime 即变化时间);
+     * 客户端每轮心跳先传图后上报, 此值反映本轮最新画面, 无滞后; 无图 -1 (未知) */
+    $idleSec = -1;
+    if ($repUuid !== '') {
+        $tf = __DIR__ . '/mon_thumbs/' . $repUuid . '.jpg';
+        if (is_file($tf)) $idleSec = max(0, time() - filemtime($tf));
+    }
+    respond(array('success' => true, 'timestamp' => intval($now / 1000), 'status' => strval($row['status']), 'screenIdleSec' => $idleSec));
 }
 
 /* 缩略图上传: 复用 TOTP 验签; 覆盖式存储 mon_thumbs/{uuid}.jpg;
@@ -1319,9 +1326,16 @@ function handleMonitorThumb($body) {
     $dir = __DIR__ . '/mon_thumbs';
     if (!is_dir($dir)) @mkdir($dir, 0755, true);
     $file = $dir . '/' . $uuid . '.jpg';
-    /* 限频: 100 秒内已更新过则幂等跳过 (须短于客户端 120s 节流, 保证每次上传都真落盘) */
+    /* 限频: 100 秒内已更新过则幂等跳过 (须短于客户端 120s 节流, 保证每次上传都真落盘);
+     * 限频跳过未比内容, 最坏使静止计时多算一个限频窗口 (下一轮真传即归零, 分钟级阈值下无影响) */
     if (is_file($file) && (time() - filemtime($file)) < 100) {
         respond(array('success' => true, 'skipped' => true));
+    }
+    /* 内容对比: 与已存图 md5 相同则不落盘 (thumb mtime 不变 = 画面静止计时不重置);
+     * JPEG 重编码的确定性保证相同画面字节相同; 误判方向安全 (变化被误判相同几乎不可能,
+     * 相同被判不同只是静止计时提前归零) */
+    if (is_file($file) && md5_file($file) === md5($bin)) {
+        respond(array('success' => true, 'skipped' => true, 'same' => true));
     }
     $saved = false;
     if (function_exists('imagecreatefromstring')) {

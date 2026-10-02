@@ -40,6 +40,12 @@
  *   下发: 状态页"修改变量"保存后, 设备下个心跳写入 auto 变量 '修改变量',
  *         业务脚本 auto.getValue('修改变量') 读取 (内容如 [{"name":"李四","count":4},...])
  *
+ * 画面静止检测 (内置, 随心跳自动执行, 只输出不动作):
+ *   服务端对比缩略图内容 (相同不落盘), 按图内容最后变化时间计算静止秒数,
+ *   随心跳响应回传 -> 插件写 auto 变量 '画面静止秒' ('0'=画面正常/未知/心跳失败,
+ *   正整数=静止秒数)。每轮心跳先传图后上报, 输出值反映本轮最新画面, 无滞后;
+ *   重启与否由业务脚本自行决定 (本插件不做任何重启动作)
+ *
  * 数组条件/动作 (loop action, 需配置工具变量: 数组变量名/匹配字段/匹配值/比较字段/
  *   判断条件/比较值/自增字段/步长, 详见 loop 内 case 注释):
  *   条件类-数组字段判断     判断数组内某条目字段是否符合条件, 返回 true/false
@@ -858,7 +864,7 @@ function monMaybeThumb(force) {
 /* ==================== 动作入口 ====================
  * 合并动作: 一次调用 = 任务累计 + 错误收集 + 重置检查 + 心跳(含缩略图)
  * 官方规范: auto.setValue 存结果 + break 结束, 无 return
- * 编辑器需导入: 输出 监控上报结果/状态/uuid; 输入 错误信息/重置监控(可选) */
+ * 编辑器需导入: 输出 监控上报结果/状态/uuid/画面静止秒; 输入 错误信息/重置监控(可选) */
 function monDoAll() {
     var now = Date.now();
     var parts = [];
@@ -887,9 +893,11 @@ function monDoAll() {
         slog('监控计数已重置 (任务/错误归零)');
         parts = ['任务0', '错误0'];
     }
-    /* 4. 心跳上报 (60s 节流; 本周期第一次调用强制上报, 含状态/uuid 写入与缩略图) */
+    /* 4. 缩略图先行 (120s 节流): 先传图后心跳, 服务端静止计时基于本轮最新画面, 无滞后 */
     monLoopCount += 1;
     var firstCall = (monLoopCount === 1);
+    monMaybeThumb(firstCall);
+    /* 5. 心跳上报 (60s 节流; 本周期第一次调用强制上报, 含状态/uuid 写入) */
     var lastRep = Number(monRead(MON_LASTREP_FILE, 'mon_last_report') || '0');
     if (!firstCall && lastRep > 0 && now - lastRep < MON_INTERVAL_SEC * 1000 - 2000) {
         slog('心跳: 跳过 (距上次 < ' + MON_INTERVAL_SEC + 's)');
@@ -907,9 +915,15 @@ function monDoAll() {
             if (rj && rj.success) {
                 var st = String(rj.status || '').trim();
                 sv('状态', st === '' ? '在线' : st);
+                /* 画面静止秒: 服务端基于缩略图内容变化时间计算 (本轮图已先行上传, 无滞后);
+                 * 无图/未知回传 -1, 输出 0 (业务脚本按 0=画面正常处理, 宁可不动作) */
+                var idle = Number(rj.screenIdleSec);
+                sv('画面静止秒', isFinite(idle) && idle > 0 ? String(Math.floor(idle)) : '0');
             }
-        } catch (e2) {}
-        monMaybeThumb(firstCall);
+        } catch (e2) {
+            sv('画面静止秒', '0');
+        }
+        if (!ok) sv('画面静止秒', '0');
         /* 拉取网页端修改的变量并写回编辑器 (业务脚本 auto.getValue('修改变量') 使用) */
         try {
             var vr = monFetchVars();
