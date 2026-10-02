@@ -227,8 +227,15 @@ function dbAcc() {
         uuid VARCHAR(32) PRIMARY KEY,
         view_var MEDIUMTEXT NOT NULL,
         edit_var MEDIUMTEXT NOT NULL,
-        updated_ms BIGINT NOT NULL DEFAULT 0
+        updated_ms BIGINT NOT NULL DEFAULT 0,
+        fetched_ms BIGINT NOT NULL DEFAULT 0
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    /* 存量库补 fetched_ms 列 (设备拉取回执时间, 幂等) */
+    $__r = $GLOBALS['__accDb']->query("SELECT 1 FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'monitor_vars' AND COLUMN_NAME = 'fetched_ms'");
+    if ($__r && !$__r->fetch_assoc()) {
+        $GLOBALS['__accDb']->query("ALTER TABLE monitor_vars ADD COLUMN fetched_ms BIGINT NOT NULL DEFAULT 0");
+    }
     return $__accDb;
 }
 
@@ -1793,10 +1800,12 @@ function handleMonitorSetStatus($body) {
 }
 
 /* ==================== 设备编辑器变量 (查看变量/修改变量) ==================== */
-/* 认证三模式: 管理员 key (任意设备) / 客户 token (仅绑定设备) / 设备签名 (仅自己, 仅查看) */
-function monVarsAuth($body, $write) {
+/* 认证三模式: 管理员 key (任意设备) / 客户 token (仅绑定设备) / 设备签名 (仅自己, 仅查看);
+ * $via 引用返回认证来源 ('key'|'token'|'device'), 供设备拉取回执判定 */
+function monVarsAuth($body, $write, &$via = null) {
     $cip = clientIp();
     if (isset($body['key']) && strval($body['key']) !== '') {
+        $via = 'key';
         if (adminFailCheck($cip)) respond(array('success' => false, 'message' => '失败次数过多, IP 已被暂时封禁'), 429);
         if (!monitorAuth(strval($body['key']))) {
             adminFail($cip);
@@ -1808,6 +1817,7 @@ function monVarsAuth($body, $write) {
         return $uuid;
     }
     if (isset($body['token']) && strval($body['token']) !== '') {
+        $via = 'token';
         $tk = preg_replace('/[^0-9a-f]/', '', strval($body['token']));
         $userId = monTokenCheck($tk);
         if (!$userId) respond(array('success' => false, 'message' => '登录已过期, 请重新登录'), 401);
@@ -1825,6 +1835,7 @@ function monVarsAuth($body, $write) {
     }
     if ($write) respond(array('success' => false, 'message' => '修改变量需管理员密钥或客户登录'), 401);
     /* 设备签名认证: 设备只能查看自己的变量 */
+    $via = 'device';
     $v = monitorVerifySigned($body);
     $uuid = strtoupper(preg_replace('/[^0-9A-Fa-f\-]/', '', $v['uuid']));
     if ($uuid === '' || strlen($uuid) > 32) respond(array('success' => false, 'message' => '设备UUID无效'), 400);
@@ -1832,7 +1843,7 @@ function monVarsAuth($body, $write) {
 }
 
 function monVarsLoad($uuid) {
-    $st = dbAcc()->prepare("SELECT view_var, edit_var, updated_ms FROM monitor_vars WHERE uuid = ?");
+    $st = dbAcc()->prepare("SELECT view_var, edit_var, updated_ms, fetched_ms FROM monitor_vars WHERE uuid = ?");
     if (!$st) return null;
     $st->bind_param('s', $uuid);
     $st->execute();
@@ -1841,17 +1852,32 @@ function monVarsLoad($uuid) {
     return $row;
 }
 
-/* 查看变量组 (只读) + 修改变量组 (网页可编辑) */
+/* 查看变量组 (只读) + 修改变量组 (网页可编辑);
+ * 设备签名拉取 (via=device) 且 edit 非空时记 fetched_ms 回执, 网页据此区分 "待应用/已拉取" */
 function handleMonitorVars($body) {
     if (!rateLimit(clientIp(), 60)) respond(array('success' => false, 'message' => '请求过于频繁'));
-    $uuid = monVarsAuth($body, false);
+    $via = '';
+    $uuid = monVarsAuth($body, false, $via);
     $row = monVarsLoad($uuid);
+    $edit = strval($row ? $row['edit_var'] : '');
+    $fetchedMs = intval($row ? $row['fetched_ms'] : 0);
+    if ($via === 'device' && $edit !== '') {
+        $now = nowMs();
+        $st = dbAcc()->prepare("UPDATE monitor_vars SET fetched_ms = ? WHERE uuid = ?");
+        if ($st) {
+            $st->bind_param('is', $now, $uuid);
+            $st->execute();
+            $st->close();
+            $fetchedMs = $now;
+        }
+    }
     respond(array(
         'success' => true,
         'uuid' => $uuid,
         'view' => strval($row ? $row['view_var'] : ''),
-        'edit' => strval($row ? $row['edit_var'] : ''),
+        'edit' => $edit,
         'updatedMs' => intval($row ? $row['updated_ms'] : 0),
+        'fetchedMs' => $fetchedMs,
     ));
 }
 

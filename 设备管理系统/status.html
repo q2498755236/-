@@ -898,7 +898,7 @@ function renderBinds(j) {
 }
 
 /* ============ 设备变量 (查看变量/修改变量) ============ */
-var VARS_UUID = '', VARS_VIEW = '', VARS_EDIT = '';
+var VARS_UUID = '', VARS_VIEW = '', VARS_EDIT = '', VARS_UPDATED_MS = 0, VARS_FETCHED_MS = 0;
 
 function varsRows(text) {
     /* [{"name":..,"count":..}] 每条一行; 解析失败显示原文 */
@@ -941,8 +941,17 @@ function openVars(uuid) {
         if (!j.success) { toast(j.message || '读取失败', false); closeModal(); return; }
         VARS_VIEW = String(j.view || '');
         VARS_EDIT = String(j.edit || '');
+        VARS_UPDATED_MS = parseInt(j.updatedMs, 10) || 0;
+        VARS_FETCHED_MS = parseInt(j.fetchedMs, 10) || 0;
         renderVarsModal();
     }).catch(function () { toast('读取失败, 请重试', false); closeModal(); });
+}
+
+function varsEditSub() {
+    if (String(VARS_EDIT || '').trim() === '') return '无下发内容 · 保存后设备心跳拉取生效';
+    if (VARS_UPDATED_MS > VARS_FETCHED_MS) return '已下发 · 待设备心跳应用';
+    if (VARS_FETCHED_MS > 0) return '设备已拉取 (' + fmtAgo(VARS_FETCHED_MS) + ')';
+    return '保存后设备心跳拉取生效';
 }
 
 function renderVarsModal() {
@@ -950,7 +959,7 @@ function renderVarsModal() {
     content.innerHTML = '<h3><i data-lucide="braces"></i>设备变量<span class="vars-uuid">' + esc(VARS_UUID) + '</span></h3>'
         + '<div class="vars-group"><div class="vars-title">查看变量 <span class="vars-sub">设备上报 · 只读</span></div>'
         + '<div>' + varsRows(VARS_VIEW) + '</div></div>'
-        + '<div class="vars-group"><div class="vars-title">修改变量 <span class="vars-sub">保存后设备心跳拉取生效</span>'
+        + '<div class="vars-group"><div class="vars-title">修改变量 <span class="vars-sub">' + esc(varsEditSub()) + '</span>'
         + '<button class="ghost" onclick="editVarsForm()">编辑</button></div>'
         + '<div id="editArea">' + varsRows(VARS_EDIT) + '</div></div>'
         + '<div class="modal-footer"><button class="ghost" onclick="closeModal()">关闭</button></div>';
@@ -990,6 +999,8 @@ function saveVars() {
         if (!j) return;
         if (!j.success) { toast(j.message || '保存失败', false); return; }
         VARS_EDIT = String(j.edit || '');
+        VARS_UPDATED_MS = Date.now();
+        VARS_FETCHED_MS = 0;
         toast('修改变量已保存, 设备下个心跳生效', true);
         renderVarsModal();
     }).catch(function () { toast('保存失败, 请重试', false); });
