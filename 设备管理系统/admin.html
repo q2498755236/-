@@ -529,6 +529,13 @@ var currentTab = 'list';
 
 function icons() { if (window.lucide) lucide.createIcons(); }
 
+/* HTML 转义: 所有服务端数据拼进 innerHTML 前必须过此函数 (存储型 XSS 防线) */
+function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+}
+
 /* toast 通知 (替代原生 alert 风格) */
 function showMsg(text, ok) {
     var box = document.getElementById('toastBox');
@@ -698,7 +705,7 @@ function loadList() {
                 '<td><input type="checkbox" data-code="' + c.code + '"' + checked + ' onclick="toggleCode(event, \'' + c.code + '\')" style="width:auto;height:auto;accent-color:#c8ff00"></td>' +
                 '<td><code style="font-size:12px">' + c.code + '</code></td>' +
                 '<td>' + statusTag(c.status) + '</td>' +
-                '<td class="note-cell" onclick="editNote(\'' + c.code + '\',\'' + (c.note || '').replace(/'/g, "\\'") + '\')" title="点击编辑备注">' + (c.note || '<span class="muted">-</span>') + '</td>' +
+                '<td class="note-cell" data-code="' + esc(c.code) + '" data-note="' + esc(c.note || '') + '" title="点击编辑备注">' + (c.note ? esc(c.note) : '<span class="muted">-</span>') + '</td>' +
                 '<td style="font-family:var(--mono);font-size:12px;color:var(--txt2)">' + fmtTime(c.expireAt) + '</td>' +
                 '<td><span class="muted" style="font-family:var(--mono);font-size:11px">' + (c.expireMode === 'activate' ? 'ACT' : 'GEN') + '</span></td>' +
                 '<td>' + devicesHtml + '</td>' +
@@ -730,7 +737,7 @@ function loadLogs() {
         var logs = json.logs || [];
         var pg = json.pagination || {};
         var html = logs.length ? '' : '<div class="empty">暂无日志</div>';
-        logs.forEach(function(l) { html += '<div class="log-line">' + l + '</div>'; });
+        logs.forEach(function(l) { html += '<div class="log-line">' + esc(l) + '</div>'; });
         document.getElementById('logsContent').innerHTML = html;
         renderPagination(pg, 'logPagination', goLogPage);
     }).catch(function() {});
@@ -850,11 +857,11 @@ function unbindDevice(code, deviceUuid, skipConfirm) {
 function editNote(code, currentNote) {
     var modal = document.getElementById('modalOverlay');
     var content = document.getElementById('modalContent');
-    content.innerHTML = '<h3><i data-lucide="pen-line"></i>编辑备注 - ' + code + '</h3>' +
-        '<textarea id="noteInput" rows="3" style="width:100%">' + (currentNote || '') + '</textarea>' +
+    content.innerHTML = '<h3><i data-lucide="pen-line"></i>编辑备注 - ' + esc(code) + '</h3>' +
+        '<textarea id="noteInput" rows="3" style="width:100%">' + esc(currentNote || '') + '</textarea>' +
         '<div class="modal-footer">' +
         '<button class="ghost" onclick="closeModal()">取消</button>' +
-        '<button onclick="saveNote(\'' + code + '\')"><i data-lucide="save"></i>保存</button>' +
+        '<button onclick="saveNote(\'' + esc(code) + '\')"><i data-lucide="save"></i>保存</button>' +
         '</div>';
     modal.style.display = 'flex'; icons();
 }
@@ -1041,6 +1048,13 @@ function toggleWhitelist() {
 })();
 icons();
 loadLogs();
+
+/* 事件委托: 备注单元格点击编辑 (data-* 取参, 避免内联事件引号转义穿透) */
+document.getElementById('listBody').addEventListener('click', function (e) {
+    var cell = e.target && e.target.closest ? e.target.closest('.note-cell') : null;
+    if (!cell) return;
+    editNote(cell.getAttribute('data-code'), cell.getAttribute('data-note') || '');
+});
 </script>
 </body>
 </html>

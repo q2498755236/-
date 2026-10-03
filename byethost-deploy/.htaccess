@@ -1,0 +1,53 @@
+# NEXUS CARDKEY - 路由重写 + 敏感文件保护 (Apache 2.2/2.4 与 LiteSpeed 兼容)
+
+# 禁用目录浏览
+Options -Indexes
+
+<IfModule mod_rewrite.c>
+RewriteEngine On
+
+# 数据目录 (状态文件/缩略图/备份) 一律 404
+RewriteRule ^carddata(/|$) - [R=404,L]
+
+# CGI/LiteSpeed 下透传 Authorization 头 (Bearer 认证依赖, 缺失则管理接口全 401)
+RewriteCond %{HTTP:Authorization} ^(.*)
+RewriteRule ^ - [E=HTTP_AUTHORIZATION:%1]
+
+# API 与前端路由: 非真实文件统一进 index.php (内部路由 + JSON 404)
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^ index.php [QSA,L]
+</IfModule>
+
+# 拦截敏感配置/开发文件 (HTTP 直接访问; PHP 内部 include 走文件系统, 不受影响)
+<FilesMatch "^(config\.php|config\.online\.php|config\.example\.php|router\.php)$">
+<IfModule mod_authz_core.c>
+    Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+    Order Allow,Deny
+    Deny from all
+</IfModule>
+</FilesMatch>
+
+# 隐藏文件 (.git/.env 等)
+<FilesMatch "^\.">
+<IfModule mod_authz_core.c>
+    Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+    Order Allow,Deny
+    Deny from all
+</IfModule>
+</FilesMatch>
+
+# SQL/日志/备份文件后缀兜底拦截
+<FilesMatch "\.(sql|log|env|bak)$">
+<IfModule mod_authz_core.c>
+    Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+    Order Allow,Deny
+    Deny from all
+</IfModule>
+</FilesMatch>
