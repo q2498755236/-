@@ -176,7 +176,7 @@ var MON_USE_SHELL = true;    /* 电量/内存 (auto.shell) */
 var MON_USE_SCREEN = true;   /* 屏幕开关 (auto.isScreenOn) */
 var MON_USE_PKG = true;      /* 前台应用 (Shell优先四级降级, 见 monPostReport) */
 var MON_USE_VER = true;      /* 编辑器版本 (auto.clientVersion) */
-var MON_VERSION = '1.1.0';   /* 插件版本号, 随心跳上报 (payload.ver), 网页设备卡"客户端"行显示 */
+var MON_VERSION = '1.2.0';   /* 插件版本号, 随心跳上报 (payload.ver), 网页设备卡"客户端"行显示 */
 
 /* ---------- 持久化路径与兜底变量名 ---------- */
 var MON_DIR = '/sdcard/.mon_monitor';
