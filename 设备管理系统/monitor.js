@@ -25,6 +25,8 @@
  *     状态          服务端回传设备状态 '在线'/'挂机'/'离线', 业务脚本 getValue 判断
  *     画面状态      服务端缩略图对比结果 '正常'/'静止(N秒)'/'黑屏(N秒)', 随心跳/缩略图
  *                   响应自动写入, 业务脚本 getValue 判断 (黑屏优先级高于静止)
+ *     画面静止秒    服务端画面内容最后变化距今秒数 (全数字): >0 静止秒数 / 0 画面刚变化(正常)
+ *                   / -1 未知 (服务端无图) / -2 心跳失败; 重启决策由业务脚本按此值自行决定
  *     重置监控      清零后写回 '0' (与输入同名: @同一全局变量构成读写闭环)
  *     修改变量      输出 @与输入同一全局变量, 状态页下发经此写回落地
  *     配置变量      同上 (两组下发内容互相隔离)
@@ -1229,17 +1231,21 @@ function monThumbUpload() {
 }
 
 /* 服务端画面状态下发 (缩略图 dHash 对比 + 黑屏检测) 写入输出变量 '画面状态'
- * 值格式: 正常 | 静止(N秒) | 黑屏(N秒), 业务脚本 auto.getValue('画面状态') 读取判断 */
+ * 值格式: 正常 | 静止(N秒) | 黑屏(N秒), 业务脚本 auto.getValue('画面状态') 读取判断;
+ * 同时写数字变量 '画面静止秒' (static_sec, 画面内容最后变化距今秒): >0 静止秒数,
+ * 0 画面刚变化(正常), -1 未知 (服务端无图/字段缺失); 心跳失败由 monDoAll 写 -2 */
 function monApplyScreen(rj) {
     try {
         var s = rj && rj.screen;
-        if (!s || typeof s !== 'object') return;
+        if (!s || typeof s !== 'object') { sv('画面静止秒', '-1'); return; }
         var txt;
         if (s.state === 'black') txt = '黑屏(' + Math.max(0, Number(s.black_sec) || 0) + '秒)';
         else if (s.state === 'static') txt = '静止(' + Math.max(0, Number(s.static_sec) || 0) + '秒)';
         else txt = '正常';
         sv('画面状态', txt);
-    } catch (e) {}
+        var idle = Number(s.static_sec);
+        sv('画面静止秒', isFinite(idle) ? String(Math.max(0, Math.floor(idle))) : '-1');
+    } catch (e) { sv('画面静止秒', '-1'); }
 }
 
 /* 缩略图节流入口: 上报动作内调用, 120s 一张; force=true 时跳过节流 (首次必截)
@@ -1301,7 +1307,7 @@ function monDoAll(force, countTask) {
         parts = ['任务0', '错误0'];
     }
     /* 4. 心跳上报 (节流默认 60s, 输入变量 上报时间 可改秒数, 0=每次调用立即上报;
-     *    本周期第一次调用或 force=true 时强制上报, 含状态/uuid 写入与缩略图) */
+     *    本周期第一次调用或 force=true 时强制上报, 含状态/uuid 写入) */
     monLoopCount += 1;
     var firstCall = (monLoopCount === 1);
     var cfgSec = parseInt(auto.getValue('上报时间'), 10);
@@ -1313,6 +1319,9 @@ function monDoAll(force, countTask) {
         parts.push('心跳跳过');
     } else {
         if (firstCall) slog('首次调用: 强制心跳+截图');
+        /* 缩略图先行 (120s 节流): 先传图后心跳, 服务端画面静止计时基于本轮最新画面, 无滞后;
+         * 缩略图响应同时下发画面状态, 先于心跳写入 '画面状态'/'画面静止秒' */
+        monMaybeThumb(force || firstCall);
         /* 先拉取并应用网页下发 (数组内容比对"上次修改"时间戳后写回), 再上报, 本周期即带上新值;
          * 上发配置=1 也统一拉取: 服务端按 applied 锚点闭环停发已应用内容, 正常返回空;
          * 有未应用的下发时, 本周期上报自动暂停上发 (见 monPostReport), 防止设备旧内容
@@ -1333,7 +1342,7 @@ function monDoAll(force, countTask) {
             if (rj && rj.success) {
                 var st = String(rj.status || '').trim();
                 sv('状态', st === '' ? '在线' : st);
-                /* 服务端画面状态: 随心跳兜底下发 (缩略图响应为主通道) */
+                /* 服务端画面状态: 随心跳兜底下发 (缩略图响应为主通道), 同源刷新 '画面静止秒' */
                 monApplyScreen(rj);
                 if (rj.resetCmd) {
                     monWrite(MON_TASK_FILE, 'mon_task_count', '0');
@@ -1343,9 +1352,13 @@ function monDoAll(force, countTask) {
                     slog('收到服务端清零指令: 任务/错误归零');
                     parts.push('清零');
                 }
+            } else {
+                sv('画面静止秒', '-2');
             }
-        } catch (e2) {}
-        monMaybeThumb(force || firstCall);
+        } catch (e2) {
+            sv('画面静止秒', '-2');
+        }
+        if (!ok) sv('画面静止秒', '-2');
     }
     /* 5. 汇总写入结果变量 (单变量, 编辑器只导这一个就能看到全部结果) */
     var lastErr = monRead(MON_LASTERR_FILE, 'mon_last_error') || '';
