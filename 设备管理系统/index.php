@@ -243,6 +243,14 @@ function dbAcc() {
     $__rV = $__accDb->query("SELECT 1 FROM information_schema.COLUMNS
         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'monitor_vars' AND COLUMN_NAME = 'config_var'");
     if ($__rV && !$__rV->fetch_assoc()) $__accDb->query("ALTER TABLE monitor_vars ADD COLUMN config_var MEDIUMTEXT NOT NULL AFTER config_var_dev");
+    /* 备用项草稿列 (26-10-03): 仅网页编辑用, 随条目存 backup1/backup2 字段数组 JSON;
+     * 与下发内容 (edit_var/config_var) 完全隔离, 设备拉取不携带, 闭环/审计不受影响 */
+    $__rV = $__accDb->query("SELECT 1 FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'monitor_vars' AND COLUMN_NAME = 'edit_backup'");
+    if ($__rV && !$__rV->fetch_assoc()) $__accDb->query("ALTER TABLE monitor_vars ADD COLUMN edit_backup MEDIUMTEXT NOT NULL AFTER config_var");
+    $__rV = $__accDb->query("SELECT 1 FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'monitor_vars' AND COLUMN_NAME = 'config_backup'");
+    if ($__rV && !$__rV->fetch_assoc()) $__accDb->query("ALTER TABLE monitor_vars ADD COLUMN config_backup MEDIUMTEXT NOT NULL AFTER edit_backup");
     return $__accDb;
 }
 
@@ -1321,9 +1329,9 @@ function handleMonitorReport($body) {
         if ($dv !== null && strlen($vv) <= 65536 && strlen($dv) <= 65536) {
             $cvd = isset($body['configVarDev']) && is_string($body['configVarDev']) ? strval($body['configVarDev']) : '';
             if ($upCfg) {
-                $stV = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, updated_ms) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE view_var = VALUES(view_var), edit_var_dev = VALUES(edit_var_dev), edit_var = VALUES(edit_var), updated_ms = VALUES(updated_ms)");
+                $stV = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE view_var = VALUES(view_var), edit_var_dev = VALUES(edit_var_dev), edit_var = VALUES(edit_var), updated_ms = VALUES(updated_ms)");
                 if ($stV) {
-                    $stV->bind_param('ssssssi', $repUuid, $vv, $dv, $dv, $cvd, $empty, $nowV);
+                    $stV->bind_param('ssssssssi', $repUuid, $vv, $dv, $dv, $cvd, $empty, $empty, $empty, $nowV);
                     $stV->execute();
                     $stV->close();
                     /* 上发生效审计: 设备内容已反向覆盖下发基线; 摘要一行可读, 完整 JSON 快照限长 2000 供网页展开查看 */
@@ -1332,17 +1340,17 @@ function handleMonitorReport($body) {
                         'cfgContent' => utf8Truncate($cvd, 2000), 'editContent' => utf8Truncate($dv, 2000)));
                 }
             } else {
-                $stV = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, updated_ms) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE view_var = VALUES(view_var), edit_var_dev = VALUES(edit_var_dev), updated_ms = VALUES(updated_ms)");
+                $stV = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE view_var = VALUES(view_var), edit_var_dev = VALUES(edit_var_dev), updated_ms = VALUES(updated_ms)");
                 if ($stV) {
-                    $stV->bind_param('ssssssi', $repUuid, $vv, $dv, $empty, $cvd, $empty, $nowV);
+                    $stV->bind_param('ssssssssi', $repUuid, $vv, $dv, $empty, $cvd, $empty, $empty, $empty, $nowV);
                     $stV->execute();
                     $stV->close();
                 }
             }
         } elseif ($dv === null && strlen($vv) <= 65536) {
-            $stV = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, updated_ms) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE view_var = VALUES(view_var), updated_ms = VALUES(updated_ms)");
+            $stV = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE view_var = VALUES(view_var), updated_ms = VALUES(updated_ms)");
             if ($stV) {
-                $stV->bind_param('ssssssi', $repUuid, $vv, $empty, $empty, $empty, $empty, $nowV);
+                $stV->bind_param('ssssssssi', $repUuid, $vv, $empty, $empty, $empty, $empty, $empty, $empty, $nowV);
                 $stV->execute();
                 $stV->close();
             }
@@ -1355,16 +1363,16 @@ function handleMonitorReport($body) {
         $nowC = nowMs();
         $emptyC = '';
         if ($upCfg) {
-            $stC = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, updated_ms) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE config_var_dev = VALUES(config_var_dev), config_var = VALUES(config_var), updated_ms = VALUES(updated_ms)");
+            $stC = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE config_var_dev = VALUES(config_var_dev), config_var = VALUES(config_var), updated_ms = VALUES(updated_ms)");
             if ($stC) {
-                $stC->bind_param('ssssssi', $repUuid, $emptyC, $emptyC, $emptyC, $cv, $cv, $nowC);
+                $stC->bind_param('ssssssssi', $repUuid, $emptyC, $emptyC, $emptyC, $cv, $cv, $empty, $empty, $nowC);
                 $stC->execute();
                 $stC->close();
             }
         } else {
-            $stC = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, updated_ms) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE config_var_dev = VALUES(config_var_dev), updated_ms = VALUES(updated_ms)");
+            $stC = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE config_var_dev = VALUES(config_var_dev), updated_ms = VALUES(updated_ms)");
             if ($stC) {
-                $stC->bind_param('ssssssi', $repUuid, $emptyC, $emptyC, $emptyC, $cv, $emptyC, $nowC);
+                $stC->bind_param('ssssssssi', $repUuid, $emptyC, $emptyC, $emptyC, $cv, $emptyC, $empty, $empty, $nowC);
                 $stC->execute();
                 $stC->close();
             }
@@ -2477,7 +2485,7 @@ function monVarsAuth($body, $write) {
 }
 
 function monVarsLoad($uuid) {
-    $st = dbAcc()->prepare("SELECT view_var, edit_var_dev, edit_var, config_var_dev, config_var, updated_ms FROM monitor_vars WHERE uuid = ?");
+    $st = dbAcc()->prepare("SELECT view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms FROM monitor_vars WHERE uuid = ?");
     if (!$st) return null;
     $st->bind_param('s', $uuid);
     $st->execute();
@@ -2600,6 +2608,9 @@ function handleMonitorVars($body) {
         'devConfig' => strval(isset($row['config_var_dev']) ? $row['config_var_dev'] : ''),
         'config' => $cfgOut,
         'configStopped' => $cfgStopped,
+        /* 备用项草稿 (仅网页编辑回显): 条目含 backup1/backup2 字段的数组 JSON */
+        'editBackup' => strval(isset($row['edit_backup']) ? $row['edit_backup'] : ''),
+        'configBackup' => strval(isset($row['config_backup']) ? $row['config_backup'] : ''),
         'updatedMs' => intval($row ? $row['updated_ms'] : 0),
     ));
 }
@@ -2643,9 +2654,9 @@ function handleMonitorSetVars($body) {
         if (strlen($edit) > 65536) respond(array('success' => false, 'message' => '内容超过 64KB 限制'), 400);
         $edit = monEnsureStamp($edit);   /* 数组无"上次修改"则兜底补, 防闭环死锁 */
         if (strlen($edit) > 65536) respond(array('success' => false, 'message' => '内容超过 64KB 限制'), 400);
-        $st = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, updated_ms) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE edit_var = VALUES(edit_var), updated_ms = VALUES(updated_ms)");
+        $st = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE edit_var = VALUES(edit_var), updated_ms = VALUES(updated_ms)");
         if (!$st) respond(array('success' => false, 'message' => '保存失败'), 500);
-        $st->bind_param('ssssssi', $uuid, $empty, $empty, $edit, $empty, $empty, $now);
+        $st->bind_param('ssssssssi', $uuid, $empty, $empty, $edit, $empty, $empty, $empty, $empty, $now);
         $st->execute();
         $st->close();
         auditLog('变量修改', array('device' => maskId($uuid), 'by' => monActorLabel($body), 'len' => strlen($edit),
@@ -2661,15 +2672,38 @@ function handleMonitorSetVars($body) {
         if (strlen($cfg) > 65536) respond(array('success' => false, 'message' => '内容超过 64KB 限制'), 400);
         $cfg = monEnsureStamp($cfg);   /* 数组无"上次修改"则兜底补, 防闭环死锁 */
         if (strlen($cfg) > 65536) respond(array('success' => false, 'message' => '内容超过 64KB 限制'), 400);
-        $st = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, updated_ms) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE config_var = VALUES(config_var), updated_ms = VALUES(updated_ms)");
+        $st = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE config_var = VALUES(config_var), updated_ms = VALUES(updated_ms)");
         if (!$st) respond(array('success' => false, 'message' => '保存失败'), 500);
-        $st->bind_param('ssssssi', $uuid, $empty, $empty, $empty, $empty, $cfg, $now);
+        $st->bind_param('ssssssssi', $uuid, $empty, $empty, $empty, $empty, $cfg, $empty, $empty, $now);
         $st->execute();
         $st->close();
         auditLog('配置变量修改', array('device' => maskId($uuid), 'by' => monActorLabel($body), 'len' => strlen($cfg),
             'diff' => monVarsDiff(isset($row['config_var']) ? $row['config_var'] : '', $cfg),
             'content' => monVarsDigest($cfg)));
         $respCfg = $cfg;
+    }
+    /* 备用项草稿 (26-10-03): editBackup/configBackup 为条目含 backup1/backup2 字段的数组 JSON,
+     * 仅存库供网页编辑回显, 与下发内容隔离; 请求携带才更新 (只改主值时不清空已有备用);
+     * 主保存已确保行存在, 此处仅 UPDATE; 仅备用变化不触发设备闭环 */
+    if ($hasEdit && isset($body['editBackup']) && is_string($body['editBackup'])) {
+        $bak = strval($body['editBackup']);
+        if (strlen($bak) > 65536) respond(array('success' => false, 'message' => '备用内容超过 64KB 限制'), 400);
+        $stB = dbAcc()->prepare("UPDATE monitor_vars SET edit_backup = ? WHERE uuid = ?");
+        if ($stB) {
+            $stB->bind_param('ss', $bak, $uuid);
+            $stB->execute();
+            $stB->close();
+        }
+    }
+    if ($hasCfg && isset($body['configBackup']) && is_string($body['configBackup'])) {
+        $bak = strval($body['configBackup']);
+        if (strlen($bak) > 65536) respond(array('success' => false, 'message' => '备用内容超过 64KB 限制'), 400);
+        $stB = dbAcc()->prepare("UPDATE monitor_vars SET config_backup = ? WHERE uuid = ?");
+        if ($stB) {
+            $stB->bind_param('ss', $bak, $uuid);
+            $stB->execute();
+            $stB->close();
+        }
     }
     respond(array('success' => true, 'uuid' => $uuid, 'edit' => $respEdit, 'config' => $respCfg));
 }

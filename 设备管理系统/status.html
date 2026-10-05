@@ -154,6 +154,18 @@ button.solid-red:hover { background: #ff5c74; box-shadow: 0 4px 18px rgba(255,61
     padding: 0 8px; box-sizing: border-box; outline: none; text-align: right;
 }
 .vars-row .vr-input:focus { border-color: var(--acid); }
+/* 备用项: 主值行下的两个可改草稿槽, 随数组 JSON 保存下发 (backup1/backup2 字段) */
+.vars-slots {
+    display: flex; gap: 8px; align-items: center; padding: 0 12px 8px 12px; margin-top: -4px;
+}
+.vars-slots .vs-label { color: var(--txt3); font-size: 10px; letter-spacing: .06em; flex: none; }
+.vars-slots .vr-slot {
+    flex: 1; min-width: 0; height: 24px; background: #0d0d12; border: 1px dashed var(--line2); border-radius: 3px;
+    color: var(--txt2); font-family: var(--mono); font-size: 11px;
+    padding: 0 7px; box-sizing: border-box; outline: none;
+}
+.vars-slots .vr-slot:focus { border-color: var(--acid); color: var(--acid); }
+.vars-bak { font-family: var(--mono); font-size: 10px; color: var(--txt3); padding: 0 12px 6px; word-break: break-all; }
 .vars-empty { color: var(--txt3); font-size: 12px; padding: 4px 0; }
 .vars-raw { font-family: var(--mono); font-size: 11px; color: var(--txt2); white-space: pre-wrap; word-break: break-all; padding: 8px 10px; border: 1px solid var(--line); border-radius: 3px; }
 /* 操作日志 (管理员) */
@@ -1158,6 +1170,8 @@ function renderBinds(j) {
 /* ============ 设备变量 (查看变量/修改变量/配置变量) ============ */
 var VARS_UUID = '', VARS_VIEW = '', VARS_EDIT = '', VARS_DEV = '', VARS_CFG = '', VARS_CFG_DEV = '';
 var VARS_EDIT_STOPPED = false, VARS_CFG_STOPPED = false;
+var VARS_EDIT_BAK = '', VARS_CFG_BAK = '';   /* 备用项草稿 (服务端库, 不下发设备) */
+var VARS_SEQ = 0;
 
 function varsRows(text) {
     /* [{"name":..,"count":..}] 每条一行; 解析失败显示原文 */
@@ -1171,7 +1185,13 @@ function varsRows(text) {
             }
             var n = String(it.name === undefined ? '' : it.name);
             var c = (it.count === undefined || it.count === null) ? '' : String(it.count);
-            return '<div class="vars-row"><span class="vr-name">' + esc(n) + '</span><span class="vr-count">' + esc(c) + '</span></div>';
+            /* 备用项展示: 条目带 backup1/backup2 时在主值行下显示草稿值 */
+            var b1 = (it.backup1 === undefined || it.backup1 === null) ? '' : String(it.backup1);
+            var b2 = (it.backup2 === undefined || it.backup2 === null) ? '' : String(it.backup2);
+            var bak = (b1 !== '' || b2 !== '')
+                ? '<div class="vars-bak">备用: 1 ' + esc(b1 === '' ? '-' : b1) + '　2 ' + esc(b2 === '' ? '-' : b2) + '</div>'
+                : '';
+            return '<div class="vars-row"><span class="vr-name">' + esc(n) + '</span><span class="vr-count">' + esc(c) + '</span></div>' + bak;
         }).join('');
     } catch (e) {
         return '<div class="vars-raw">' + esc(String(text)) + '</div>';
@@ -1180,6 +1200,10 @@ function varsRows(text) {
 
 function openVars(uuid) {
     VARS_UUID = uuid;
+    /* 请求序号守卫: 慢主机上连续打开两台设备弹窗时, 先打开的 fetch 响应可能后到,
+     * 若无守卫会用 A 的数据覆盖 VARS_* 而弹窗标题已是 B, 用户编辑保存即把
+     * A 的配置写进 B 的下发暂存 (跨设备命令串台); 序号不符的过期响应直接丢弃 */
+    var seq = ++VARS_SEQ;
     var content = document.getElementById('modalContent');
     content.innerHTML = '<h3><i data-lucide="braces"></i>设备变量<span class="vars-uuid">' + esc(uuid) + '</span></h3>'
         + '<div class="modal-body">加载中...</div>';
@@ -1197,6 +1221,7 @@ function openVars(uuid) {
         return r.json();
     }).then(function (j) {
         if (!j) return;
+        if (seq !== VARS_SEQ) return;   /* 过期响应: 用户已切换到其他设备弹窗 */
         if (!j.success) { toast(j.message || '读取失败', false); closeModal(); return; }
         VARS_VIEW = String(j.view || '');
         VARS_DEV = String(j.devEdit || '');
@@ -1205,6 +1230,8 @@ function openVars(uuid) {
         VARS_CFG_DEV = String(j.devConfig || '');
         VARS_CFG = String(j.config || '');
         VARS_CFG_STOPPED = !!j.configStopped;
+        VARS_EDIT_BAK = String(j.editBackup || '');
+        VARS_CFG_BAK = String(j.configBackup || '');
         renderVarsModal();
     }).catch(function () { toast('读取失败, 请重试', false); closeModal(); });
 }
@@ -1308,7 +1335,17 @@ function editVarsForm(kind) {
         /* 非数组 JSON: 保持原文编辑 */
         area.innerHTML = '<textarea class="vars-textarea" spellcheck="false">' + esc(init) + '</textarea>' + footer;
     } else {
-        /* 数组: 与查看变量同行样式, name 只读, 仅 count 值可改; "上次修改"行只读 */
+        /* 数组: 与查看变量同行样式, name 只读, 仅 count 值可改; "上次修改"行只读;
+         * 每个可编辑项下加两个备用槽 (backup1/backup2), 仅存服务端草稿, 不下发设备 */
+        var bakMap = {};
+        try {
+            var bakArr = JSON.parse(kind === 'config' ? VARS_CFG_BAK : VARS_EDIT_BAK);
+            if (Array.isArray(bakArr)) {
+                bakArr.forEach(function (b) {
+                    if (b && typeof b === 'object' && b.name !== undefined) bakMap[String(b.name)] = b;
+                });
+            }
+        } catch (e) {}
         var rows = parsed.map(function (it, i) {
             if (typeof it !== 'object' || it === null) {
                 return '<div class="vars-row"><span class="vr-name">' + esc(String(it)) + '</span><span class="vr-count"></span></div>';
@@ -1318,8 +1355,15 @@ function editVarsForm(kind) {
             if (n === '上次修改') {
                 return '<div class="vars-row"><span class="vr-name">' + esc(n) + '</span><span class="vr-count">' + esc(c) + '</span></div>';
             }
+            var b = bakMap[n] || {};
+            var b1 = (b.backup1 === undefined || b.backup1 === null) ? '' : String(b.backup1);
+            var b2 = (b.backup2 === undefined || b.backup2 === null) ? '' : String(b.backup2);
             return '<div class="vars-row"><span class="vr-name">' + esc(n) + '</span>'
-                + '<input class="vr-input" data-idx="' + i + '" value="' + esc(c) + '" inputmode="decimal" spellcheck="false"></div>';
+                + '<input class="vr-input" data-idx="' + i + '" value="' + esc(c) + '" inputmode="decimal" spellcheck="false"></div>'
+                + '<div class="vars-slots">'
+                + '<span class="vs-label">备1</span><input class="vr-slot" data-idx="' + i + '" data-slot="backup1" value="' + esc(b1) + '" spellcheck="false">'
+                + '<span class="vs-label">备2</span><input class="vr-slot" data-idx="' + i + '" data-slot="backup2" value="' + esc(b2) + '" spellcheck="false">'
+                + '</div>';
         }).join('');
         area.innerHTML = rows + footer;
     }
@@ -1388,6 +1432,22 @@ function saveVars(kind) {
     }
     var payload = { uuid: VARS_UUID };
     payload[k.field] = text;
+    /* 备用槽收集 (仅表单模式有 .vr-slot 元素): 深拷贝数组写 backup1/backup2 (空值删字段);
+     * 下发数组 (payload[k.field]) 保持纯 name/count, 备用仅存服务端供下次编辑回显 */
+    var slots = document.querySelectorAll('#' + k.area + ' .vr-slot');
+    if (slots.length > 0 && form.arr !== null) {
+        var bakArr = JSON.parse(JSON.stringify(form.arr));
+        for (var s = 0; s < slots.length; s++) {
+            var si = parseInt(slots[s].getAttribute('data-idx'), 10);
+            var bit = bakArr[si];
+            if (!bit || typeof bit !== 'object') continue;
+            var slotName = String(slots[s].getAttribute('data-slot'));
+            var sv = String(slots[s].value).trim();
+            if (sv === '') delete bit[slotName];
+            else bit[slotName] = isNaN(Number(sv)) ? sv : Number(sv);
+        }
+        payload[kind === 'config' ? 'configBackup' : 'editBackup'] = JSON.stringify(bakArr);
+    }
     var hdrs = { 'Content-Type': 'application/json' };
     if (ACC_MODE) {
         payload.token = localStorage.getItem('monitor_token') || '';
@@ -1428,6 +1488,8 @@ function confirmModal(msg, onYes, danger) {
 function closeModal(e) {
     if (e && e.target !== document.getElementById('modalOverlay')) return;
     document.getElementById('modalOverlay').style.display = 'none';
+    /* 关闭弹窗即失效未返回的变量请求, 防止迟到响应渲染进已关闭的弹窗 */
+    VARS_SEQ++;
 }
 
 /* 操作日志 (仅管理员, 入口在 adminBar): 拉取审计日志尾部, 按 操作者(管理员/账号/设备) + 内容摘要 展示 */
