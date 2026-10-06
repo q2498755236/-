@@ -155,16 +155,20 @@ button.solid-red:hover { background: #ff5c74; box-shadow: 0 4px 18px rgba(255,61
 }
 .vars-row .vr-input:focus { border-color: var(--acid); }
 /* 备用项: 主值行下的两个可改草稿槽, 随数组 JSON 保存下发 (backup1/backup2 字段) */
-.vars-slots {
-    display: flex; gap: 8px; align-items: center; padding: 0 12px 8px 12px; margin-top: -4px;
-}
-.vars-slots .vs-label { color: var(--txt3); font-size: 10px; letter-spacing: .06em; flex: none; }
+.vars-slots { display: flex; gap: 10px; padding: 0 12px 8px 12px; margin-top: -4px; }
+.vars-slots .vs-item { flex: 1; min-width: 0; display: flex; gap: 4px; align-items: center; }
 .vars-slots .vr-slot {
     flex: 1; min-width: 0; height: 24px; background: #0d0d12; border: 1px dashed var(--line2); border-radius: 3px;
     color: var(--txt2); font-family: var(--mono); font-size: 11px;
     padding: 0 7px; box-sizing: border-box; outline: none;
 }
 .vars-slots .vr-slot:focus { border-color: var(--acid); color: var(--acid); }
+.vars-slots .vs-btn {
+    flex: none; height: 24px; padding: 0 7px; font-size: 11px; line-height: 1;
+    background: transparent; border: 1px dashed var(--line2); border-radius: 3px;
+    color: var(--txt3); cursor: pointer;
+}
+.vars-slots .vs-btn:hover { border-color: var(--acid); color: var(--acid); }
 .vars-bak { font-family: var(--mono); font-size: 10px; color: var(--txt3); padding: 0 12px 6px; word-break: break-all; }
 .vars-empty { color: var(--txt3); font-size: 12px; padding: 4px 0; }
 .vars-raw { font-family: var(--mono); font-size: 11px; color: var(--txt2); white-space: pre-wrap; word-break: break-all; padding: 8px 10px; border: 1px solid var(--line); border-radius: 3px; }
@@ -1173,9 +1177,19 @@ var VARS_EDIT_STOPPED = false, VARS_CFG_STOPPED = false;
 var VARS_EDIT_BAK = '', VARS_CFG_BAK = '';   /* 备用项草稿 (服务端库, 不下发设备) */
 var VARS_SEQ = 0;
 
-function varsRows(text) {
-    /* [{"name":..,"count":..}] 每条一行; 解析失败显示原文 */
+function varsRows(text, bakText) {
+    /* [{"name":..,"count":..}] 每条一行; 解析失败显示原文;
+     * bakText (备用草稿) 按条目 name 匹配, 有备用值时在主值行下叠加只读展示 */
     if (!text || !String(text).trim()) return '<div class="vars-empty">暂无数据</div>';
+    var bakMap = {};
+    if (bakText && String(bakText).trim()) {
+        try {
+            var ba = JSON.parse(String(bakText));
+            if (Array.isArray(ba)) ba.forEach(function (b) {
+                if (b && typeof b === 'object' && b.name !== undefined) bakMap[String(b.name)] = b;
+            });
+        } catch (eb) {}
+    }
     try {
         var arr = JSON.parse(String(text));
         if (!Array.isArray(arr) || arr.length === 0) return '<div class="vars-empty">暂无数据</div>';
@@ -1185,9 +1199,9 @@ function varsRows(text) {
             }
             var n = String(it.name === undefined ? '' : it.name);
             var c = (it.count === undefined || it.count === null) ? '' : String(it.count);
-            /* 备用项展示: 条目带 backup1/backup2 时在主值行下显示草稿值 */
-            var b1 = (it.backup1 === undefined || it.backup1 === null) ? '' : String(it.backup1);
-            var b2 = (it.backup2 === undefined || it.backup2 === null) ? '' : String(it.backup2);
+            var b = bakMap[n] || {};
+            var b1 = (b.backup1 === undefined || b.backup1 === null) ? '' : String(b.backup1);
+            var b2 = (b.backup2 === undefined || b.backup2 === null) ? '' : String(b.backup2);
             var bak = (b1 !== '' || b2 !== '')
                 ? '<div class="vars-bak">备用: 1 ' + esc(b1 === '' ? '-' : b1) + '　2 ' + esc(b2 === '' ? '-' : b2) + '</div>'
                 : '';
@@ -1250,14 +1264,14 @@ function renderVarsModal() {
         + (hasDev ? '<button class="ghost" onclick="editVarsForm(\'edit\')">编辑</button>' : '')
         + '</div>'
         + (hasDev
-            ? '<div id="editArea">' + varsRows(VARS_DEV) + (pendingE ? '<div class="vars-sub">有已下发内容待设备心跳应用</div>' : '') + '</div>'
+            ? '<div id="editArea">' + varsRows(VARS_DEV, VARS_EDIT_BAK) + (pendingE ? '<div class="vars-sub">有已下发内容待设备心跳应用</div>' : '') + '</div>'
             : '<div class="vars-sub">设备尚未上报修改变量内容, 暂不可修改</div>')
         + '</div>'
         + '<div class="vars-group"><div class="vars-title">配置变量 <span class="vars-sub">设备上报 · 可修改下发</span>'
         + (hasCfg ? '<button class="ghost" onclick="editVarsForm(\'config\')">编辑</button>' : '')
         + '</div>'
         + (hasCfg
-            ? '<div id="cfgArea">' + varsRows(VARS_CFG_DEV) + (pendingC ? '<div class="vars-sub">有已下发内容待设备心跳应用</div>' : '') + '</div>'
+            ? '<div id="cfgArea">' + varsRows(VARS_CFG_DEV, VARS_CFG_BAK) + (pendingC ? '<div class="vars-sub">有已下发内容待设备心跳应用</div>' : '') + '</div>'
             : '<div class="vars-sub">设备尚未上报配置变量内容, 暂不可修改</div>')
         + '</div>'
         + '<div class="modal-footer"><button class="ghost" onclick="closeModal()">关闭</button></div>';
@@ -1361,8 +1375,10 @@ function editVarsForm(kind) {
             return '<div class="vars-row"><span class="vr-name">' + esc(n) + '</span>'
                 + '<input class="vr-input" data-idx="' + i + '" value="' + esc(c) + '" inputmode="decimal" spellcheck="false"></div>'
                 + '<div class="vars-slots">'
-                + '<span class="vs-label">备1</span><input class="vr-slot" data-idx="' + i + '" data-slot="backup1" value="' + esc(b1) + '" spellcheck="false">'
-                + '<span class="vs-label">备2</span><input class="vr-slot" data-idx="' + i + '" data-slot="backup2" value="' + esc(b2) + '" spellcheck="false">'
+                + '<div class="vs-item"><input class="vr-slot" data-idx="' + i + '" data-slot="backup1" value="' + esc(b1) + '" spellcheck="false">'
+                + '<button class="vs-btn" title="应用此备用值到主值" onclick="applySlot(this)">&#8599;</button></div>'
+                + '<div class="vs-item"><input class="vr-slot" data-idx="' + i + '" data-slot="backup2" value="' + esc(b2) + '" spellcheck="false">'
+                + '<button class="vs-btn" title="应用此备用值到主值" onclick="applySlot(this)">&#8599;</button></div>'
                 + '</div>';
         }).join('');
         area.innerHTML = rows + footer;
@@ -1388,6 +1404,19 @@ function stampApply(arr) {
         }
     }
     if (!found) arr.push({ name: '上次修改', count: stampNow() });
+}
+
+/* 备用槽应用: 把本组备用框的值填入同条目主值输入框 (仅前端表单, 需点保存才下发) */
+function applySlot(btn) {
+    var item = btn.parentElement;
+    var slot = item.querySelector('.vr-slot');
+    if (!slot || String(slot.value).trim() === '') { toast('备用值为空, 先填写再应用', false); return; }
+    var idx = String(slot.getAttribute('data-idx'));
+    var row = item.parentElement.previousElementSibling;
+    var input = row ? row.querySelector('.vr-input[data-idx="' + idx + '"]') : null;
+    if (!input) { toast('未找到主值输入框', false); return; }
+    input.value = slot.value;
+    toast('备用值已填入主值, 点保存后下发', true);
 }
 
 function saveVars(kind) {
@@ -1467,6 +1496,10 @@ function saveVars(kind) {
         if (!j.success) { toast(j.message || '保存失败', false); return; }
         if (kind === 'config') VARS_CFG = String(j.config !== undefined ? j.config : text);
         else VARS_EDIT = String(j.edit !== undefined ? j.edit : text);
+        /* 同步备用草稿缓存: 保存成功后本弹窗内再点"编辑"时备用框才能回显,
+         * 否则 editVarsForm 仍读打开弹窗时的旧 VARS_*_BAK (空), 备用看似丢失 */
+        if (kind === 'config') { if (payload.configBackup !== undefined) VARS_CFG_BAK = payload.configBackup; }
+        else { if (payload.editBackup !== undefined) VARS_EDIT_BAK = payload.editBackup; }
         toast(k.label + '已保存, 设备下个心跳生效', true);
         renderVarsModal();
     }).catch(function () { toast('保存失败, 请重试', false); });
@@ -1683,7 +1716,7 @@ function setStatus(v, targetUuid) {
     }).then(function (j) {
         if (!j) return;
         if (!j.success) { toast(j.message || '设置失败', false); return; }
-        toast('状态已设为: ' + (j.status === '' ? '正常' : j.status), true);
+        toast(j.status === '' ? '状态已设为: 正常' : '状态已设为: ' + j.status + ' (10 小时后自动恢复)', true);
         refresh();
     }).catch(function () {
         toast('设置失败, 请重试', false);
