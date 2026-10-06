@@ -61,6 +61,18 @@
  *   输出变量:
  *     数组名      @同一数组全局变量 (必配, 否则写回不落地)
  *
+ * 动作类-数组字段修改
+ *   功能: 对数组内某条目字段直接赋值 (绝对值, 区别于自增自减的增量),
+ *         修改值可转数值则存数值; 条目不存在自动新建
+ *   输入变量:
+ *     数组名      @数组全局变量
+ *     匹配字段    默认 name
+ *     匹配值      条目匹配值
+ *     修改字段    要赋值的字段, 默认 count
+ *     修改值      新值, 如 3 或 "18:00-08:00"
+ *   输出变量:
+ *     数组名      @同一数组全局变量 (必配, 否则写回不落地)
+ *
  * 条件类-寻找数组   遍历数组全部条目 name 字段 (包含匹配), 命中返回 true
  *   输入变量: 数组名 @数组全局变量; 匹配值 条目匹配值
  *   输出变量: 无
@@ -176,7 +188,7 @@ var MON_USE_SHELL = true;    /* 电量/内存 (auto.shell) */
 var MON_USE_SCREEN = true;   /* 屏幕开关 (auto.isScreenOn) */
 var MON_USE_PKG = true;      /* 前台应用 (Shell优先四级降级, 见 monPostReport) */
 var MON_USE_VER = true;      /* 编辑器版本 (auto.clientVersion) */
-var MON_VERSION = '1.2.0';   /* 插件版本号, 随心跳上报 (payload.ver), 网页设备卡"客户端"行显示 */
+var MON_VERSION = '1.2.1';   /* 插件版本号, 随心跳上报 (payload.ver), 网页设备卡"客户端"行显示 */
 
 /* ---------- 持久化路径与兜底变量名 ---------- */
 var MON_DIR = '/sdcard/.mon_monitor';
@@ -1202,7 +1214,10 @@ function monMakeThumbFile() {
 }
 
 function monThumbUpload() {
-    /* http.upload multipart 直传文件, 省掉 shell base64 (体积小 33%, 不依赖 shell) */
+    /* http.upload multipart 直传文件, 省掉 shell base64 (体积小 33%, 不依赖 shell)
+     * 异步回调式: 只同步截屏+节流, 上传不阻塞心跳主线程 (1.2.0 缩略图先行在慢主机上
+     * 多个同步 http 串联会把单周期拖长, 缩略图-心跳间隔曾达 51s 且随后设备崩溃;
+     * 异步后心跳/变量/状态正常落盘, 上传结果由回调处理) */
     var nowSec = Math.floor(Date.now() / 1000);
     var ident = monEnsureIdentity();
     var f = monMakeThumbFile();
@@ -1225,9 +1240,26 @@ function monThumbUpload() {
     var baseName = f.indexOf('/t.png') >= 0 ? 't.png' : 't.jpg';
     files[baseName] = f;
     try { http.addHeader('User-Agent', MON_UA); } catch (e3) {}
-    var res = http.upload(MON_SERVER + '/api/monitor/thumb', data, files);
-    try { auto.shell('rm -f ' + f); } catch (eF) {}   /* 上传后清理临时文件 */
-    return typeof res === 'string' ? res : (res && res.body) || '';
+    /* 回调式异步: 传入 callback 时 http.upload 不阻塞; 结果/日志/删临时文件都放回调,
+     * 临时文件必须在回调里删 (上传完成后才可删, 提前删会导致上传读不到文件) */
+    var cleanup = function () { try { auto.shell('rm -f ' + f); } catch (eF) {} };
+    try {
+        http.upload(MON_SERVER + '/api/monitor/thumb', data, files, function (res) {
+            var body = typeof res === 'string' ? res : (res && res.body) || '';
+            var ok = String(body).indexOf('"success":true') >= 0;
+            var skipped = ok && String(body).indexOf('"skipped":true') >= 0;
+            sv('监控缩略图结果', ok ? (skipped ? 'ok (服务端限频跳过)' : 'ok') : (body ? String(body).slice(0, 120) : '截图或编码失败'));
+            slog('缩略图: ' + (ok ? (skipped ? '服务端限频内跳过 (图未更新)' : '成功') : (body ? '失败 ' + String(body).slice(0, 60) : '截图或编码失败')));
+            /* 缩略图响应携带最新画面状态 (对比刚完成, 结果最及时); 心跳响应会兜底再刷一次 */
+            if (ok && !skipped) { try { monApplyScreen(JSON.parse(String(body))); } catch (eS) {} }
+            cleanup();
+        });
+    } catch (e) {
+        slog('缩略图[异步上传]异常: ' + (e && e.message ? e.message : e));
+        cleanup();
+        return '';
+    }
+    return '';   /* 异步: 立即返回, 结果由回调处理 */
 }
 
 /* 服务端画面状态下发 (缩略图 dHash 对比 + 黑屏检测) 写入输出变量 '画面状态'
@@ -1257,13 +1289,8 @@ function monMaybeThumb(force) {
         var last = Number(monRead(MON_THUMB_LAST_FILE, 'mon_last_thumb') || '0');
         if (!force && last > 0 && now - last < MON_THUMB_INTERVAL_SEC * 1000 - 2000) return;
         monWrite(MON_THUMB_LAST_FILE, 'mon_last_thumb', String(now));
-        var r = monThumbUpload();
-        var ok = String(r).indexOf('"success":true') >= 0;
-        var skipped = ok && String(r).indexOf('"skipped":true') >= 0;
-        sv('监控缩略图结果', ok ? (skipped ? 'ok (服务端限频跳过)' : 'ok') : (r ? String(r).slice(0, 120) : '截图或编码失败'));
-        slog('缩略图: ' + (ok ? (skipped ? '服务端限频内跳过 (图未更新)' : '成功') : (r ? '失败 ' + String(r).slice(0, 60) : '截图或编码失败')));
-        /* 缩略图响应携带最新画面状态 (对比刚完成, 结果最及时) */
-        if (ok && !skipped) { try { monApplyScreen(JSON.parse(String(r))); } catch (eS) {} }
+        /* 异步上传: 发起即返回, 不阻塞心跳主线程; 结果/日志/画面状态由回调处理 (monThumbUpload) */
+        monThumbUpload();
     } catch (e) {}
 }
 
@@ -1378,11 +1405,14 @@ function monDoAll(force, countTask) {
  *   比较值      条件类: 阈值, 如 2
  *   自增字段    动作类: 要自增自减的字段, 默认 count
  *   步长        动作类: 正数自增/负数自减, 默认 1
+ *   修改字段    动作类-数组字段修改: 要赋值的字段, 默认 count
+ *   修改值      动作类-数组字段修改: 新值 (可转数值则存数值)
  * 功能清单:
  *   条件类-数组字段判断   判断数组内某条目字段是否符合条件, 返回 true/false
  *   动作类-数组字段自增   对数组内某条目字段自增并写回, 条目不存在自动新建
  *   动作类-数组字段自减   对数组内某条目字段自减并写回, 条目不存在自动新建
  *   动作类-数组字段自增自减 兼容旧配置: 步长正数自增/负数自减
+ *   动作类-数组字段修改   对数组内某条目字段直接赋值并写回, 条目不存在自动新建
  *   条件类-寻找数组       遍历数组全部条目 name 字段 (包含匹配), 命中返回 true
  *   动作类-数组点击       匹配库模式: 遍历匹配库([{"name":..,"count":..}]) 按
  *                         顺序用其 count ("x,y,w,h" 或 "x,y") 调编辑器 click()
@@ -1651,6 +1681,35 @@ function arrIncDec(inc) {
     return it[iField];
 }
 
+/* 数组字段修改: 按匹配字段/匹配值定位条目, 把修改字段的值直接设为修改值
+ * (绝对赋值, 与自增自减的增量语义区分); 条目不存在自动新建;
+ * 修改值可转数值则存数值, 否则按字符串存; 写回走输出变量 "数组名"
+ * (节点须配置输出变量 @同一数组全局变量, 否则写回不落地) */
+function arrSetField() {
+    var kField = auto.getValue('匹配字段') || 'name';
+    var mVal = auto.getValue('匹配值') || '';
+    var sField = auto.getValue('修改字段') || 'count';
+    var rawSet = auto.getValue('修改值');
+    var sVal = (rawSet === undefined || rawSet === null) ? '' : String(rawSet).trim();
+    var arr = arrLoad();
+    if (arr === null) arr = [];
+    var num = Number(sVal);
+    var outVal = (sVal !== '' && !isNaN(num)) ? num : sVal;
+    var it = arrFind(arr, kField, mVal);
+    if (it === null) {
+        var fresh = {};
+        fresh[kField] = mVal;
+        fresh[sField] = outVal;
+        arr.push(fresh);
+        it = fresh;
+    } else {
+        it[sField] = outVal;
+    }
+    auto.setValue('数组名', JSON.stringify(arr));
+    slog('数组修改: ' + mVal + ' 的 ' + sField + ' => ' + it[sField]);
+    return it[sField];
+}
+
 function loop(action) {
     try {
         switch (action) {
@@ -1735,6 +1794,11 @@ function loop(action) {
             /* 动作类: 数组内某条目字段自减, 写回输出变量"数组名"; 条目不存在时自动新建 (步长取绝对值, 默认 1) */
             case "动作类-数组字段自减": {
                 return arrIncDec(false);
+            }
+            /* 动作类: 数组内某条目字段直接赋值 (修改值可转数值则存数值), 写回输出变量"数组名";
+             * 条目不存在时自动新建 */
+            case "动作类-数组字段修改": {
+                return arrSetField();
             }
             /* 兼容旧动作名: 步长正数自增/负数自减 */
             case "动作类-数组字段自增自减": {
