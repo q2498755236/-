@@ -1704,7 +1704,10 @@ function handleMonitorThumb($body) {
 define('MONITOR_ONLINE_MS', 150000);
 
 /* 审计日志查询 (仅管理员): GET /api/monitor/audit?key=...&limit=N
- * 从 audit.log 尾部高效读取 N 行, 解析为 {ts, action, detail} 倒序返回 */
+ *   &action=a,b  只含指定类型 (逗号分隔, 精确匹配)
+ *   &exclude=a,b 排除指定类型 (如 exclude=下发确认)
+ * 从 audit.log 尾部高效读取, 解析为 {ts, action, detail} 倒序返回;
+ * 过滤嵌入读取循环: 读满过滤后的 limit 条才停 (scanned 上限防超大文件全扫) */
 function handleMonitorAudit($query) {
     global $LOG_DIR;
     if (adminFailCheck(clientIp())) respond(array('success' => false, 'message' => '失败次数过多, IP 已被暂时封禁'), 429);
@@ -1716,18 +1719,20 @@ function handleMonitorAudit($query) {
     $limit = intval(isset($query['limit']) ? $query['limit'] : 300);
     if ($limit < 1) $limit = 300;
     if ($limit > 2000) $limit = 2000;
+    $actIn = array_values(array_filter(array_map('trim', explode(',', strval(isset($query['action']) ? $query['action'] : '')))));
+    $actEx = array_values(array_filter(array_map('trim', explode(',', strval(isset($query['exclude']) ? $query['exclude'] : '')))));
     $file = $LOG_DIR . '/audit.log';
     $rows = array();
     if (is_file($file)) {
         /* 从文件末尾按块向前读, 行按 新->旧 收集, 取满 limit 即停 (日志可能乱序交错, 以文件物理顺序为准) */
-        $lines = array();
         $fh = @fopen($file, 'rb');
         if ($fh) {
             fseek($fh, 0, SEEK_END);
             $size = ftell($fh);
             $chunk = 65536;
             $tail = '';
-            while ($size > 0 && count($lines) < $limit + 2) {
+            $scanned = 0;
+            while ($size > 0 && count($rows) < $limit && $scanned < 200000) {
                 $read = min($chunk, $size);
                 $size -= $read;
                 fseek($fh, $size);
@@ -1735,22 +1740,26 @@ function handleMonitorAudit($query) {
                 /* 块尾的不完整行(前一块的开头)是 explode 的最后一个元素, 用 array_pop 挂起;
                  * array_shift 会把首行当 tail 丢弃, 日志行数少时(如清空后仅剩留痕)整条读不出来 */
                 $tail = array_pop($parts);
-                $lines = array_merge(array_reverse($parts), $lines);
+                foreach (array_reverse($parts) as $line) {
+                    $line = trim($line);
+                    if ($line === '') continue;
+                    $scanned++;
+                    if (!preg_match('/^\[([^\]]+)\] \[[^\]]+\] \[AUDIT\] (\S+) (.*)$/', $line, $m)) continue;
+                    $act = $m[2];
+                    if (count($actIn) > 0 && !in_array($act, $actIn)) continue;
+                    if (count($actEx) > 0 && in_array($act, $actEx)) continue;
+                    $d = json_decode($m[3], true);
+                    $rows[] = array('ts' => $m[1], 'action' => $act, 'detail' => is_array($d) ? $d : array('raw' => $m[3]));
+                    if (count($rows) >= $limit) break;
+                }
             }
             fclose($fh);
-        }
-        foreach ($lines as $line) {
-            if (count($rows) >= $limit) break;
-            $line = trim($line);
-            if ($line === '') continue;
-            if (!preg_match('/^\[([^\]]+)\] \[[^\]]+\] \[AUDIT\] (\S+) (.*)$/', $line, $m)) continue;
-            $d = json_decode($m[3], true);
-            $rows[] = array('ts' => $m[1], 'action' => $m[2], 'detail' => is_array($d) ? $d : array('raw' => $m[3]));
         }
     }
     respond(array('success' => true, 'rows' => $rows, 'total' => count($rows)));
 }
-/* 清空审计日志: 仅管理员; 覆盖写空内容保留文件本身, 清空动作本身留痕 ("日志清空"条目) */
+/* 清空审计日志: 仅管理员; 覆盖写空内容保留文件本身, 清空动作本身留痕 ("日志清空"条目);
+ * body 带 action 时只清理指定类型 (逗号分隔多值), 其余类型保留, 留痕 "日志清理" 记录删除条数 */
 function handleMonitorAuditClear($body) {
     global $LOG_DIR;
     if (adminFailCheck(clientIp())) respond(array('success' => false, 'message' => '失败次数过多, IP 已被暂时封禁'), 429);
@@ -1760,13 +1769,35 @@ function handleMonitorAuditClear($body) {
     }
     adminFailClear(clientIp());
     $file = $LOG_DIR . '/audit.log';
-    /* file_put_contents 写空内容成功时返回 0, 须用 !== false 判断 (0 是合法成功值) */
-    $ok = @file_put_contents($file, '', LOCK_EX);
-    if ($ok === false) {
-        respond(array('success' => false, 'message' => '清空失败, 请重试'), 500);
+    $actFilter = array_values(array_filter(array_map('trim', explode(',', strval(isset($body['action']) ? $body['action'] : '')))));
+    if (count($actFilter) === 0) {
+        /* file_put_contents 写空内容成功时返回 0, 须用 !== false 判断 (0 是合法成功值) */
+        $ok = @file_put_contents($file, '', LOCK_EX);
+        if ($ok === false) {
+            respond(array('success' => false, 'message' => '清空失败, 请重试'), 500);
+        }
+        auditLog('日志清空', array('by' => '管理员'));
+        respond(array('success' => true));
     }
-    auditLog('日志清空', array('by' => '管理员'));
-    respond(array('success' => true));
+    /* 按类型清理: 全量读入, 保留 action 不在过滤集的行, 原子覆盖写回 */
+    $removed = 0;
+    $keep = array();
+    $lines = @file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    if (is_array($lines)) {
+        foreach ($lines as $line) {
+            if (preg_match('/^\[([^\]]+)\] \[[^\]]+\] \[AUDIT\] (\S+) /', $line, $m) && in_array($m[2], $actFilter)) {
+                $removed++;
+                continue;
+            }
+            $keep[] = $line;
+        }
+    }
+    $ok = @file_put_contents($file, implode("\n", $keep) . (count($keep) > 0 ? "\n" : ''), LOCK_EX);
+    if ($ok === false) {
+        respond(array('success' => false, 'message' => '清理失败, 请重试'), 500);
+    }
+    auditLog('日志清理', array('by' => '管理员', 'types' => implode(',', $actFilter), 'removed' => $removed));
+    respond(array('success' => true, 'removed' => $removed));
 }
 
 function handleMonitorList($query) {
@@ -2582,6 +2613,7 @@ function monVarsDiff($old, $new, $maxItems = 15) {
 }
 
 function handleMonitorVars($body) {
+    global $LOG_DIR;   /* ack 锚点文件依赖; 曾漏声明导致去噪失效 (拼成根路径 /ack_*.json 读写全败), 每轮心跳刷一条"下发确认" */
     if (!rateLimit(clientIp(), 60)) respond(array('success' => false, 'message' => '请求过于频繁'));
     $uuid = monVarsAuth($body, false);
     $row = monVarsLoad($uuid);

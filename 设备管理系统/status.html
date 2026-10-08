@@ -1527,6 +1527,18 @@ function closeModal(e) {
 
 /* 操作日志 (仅管理员, 入口在 adminBar): 拉取审计日志尾部, 按 操作者(管理员/账号/设备) + 内容摘要 展示 */
 var AUDIT_LIMIT = 300;
+/* 日志过滤: qs 为空串=全部; exclude=下发确认=常规; action=xxx=单类型 */
+var AUDIT_FILTERS = [
+    { label: '全部', qs: '' },
+    { label: '常规 (隐藏下发确认)', qs: '&exclude=' + encodeURIComponent('下发确认') },
+    { label: '下发确认', qs: '&action=' + encodeURIComponent('下发确认') },
+    { label: '状态修改', qs: '&action=' + encodeURIComponent('状态修改') },
+    { label: '变量修改', qs: '&action=' + encodeURIComponent('变量修改') },
+    { label: '配置变量修改', qs: '&action=' + encodeURIComponent('配置变量修改') },
+    { label: '配置上发', qs: '&action=' + encodeURIComponent('配置上发') },
+];
+var AUDIT_FILTER = 0;   /* AUDIT_FILTERS 下标 */
+function auditFilterQs() { return AUDIT_FILTERS[AUDIT_FILTER].qs; }
 function fmtAuditTs(ts) {
     var d = new Date(ts);
     if (isNaN(d.getTime())) return String(ts);
@@ -1540,7 +1552,7 @@ function openAudit(limit) {
         + '<div class="modal-body">加载中...</div>';
     document.getElementById('modalOverlay').style.display = 'flex';
     icons();
-    fetch('/api/monitor/audit?key=' + encodeURIComponent(KEY) + '&limit=' + AUDIT_LIMIT, { method: 'GET' })
+    fetch('/api/monitor/audit?key=' + encodeURIComponent(KEY) + '&limit=' + AUDIT_LIMIT + auditFilterQs(), { method: 'GET' })
         .then(function (r) { return r.json(); })
         .then(function (j) {
             if (!j || !j.success) { toast((j && j.message) || '读取失败', false); closeModal(); return; }
@@ -1592,7 +1604,7 @@ function renderAudit(rows) {
                     + diffHtml + snapHtml + '</div>';
             }).join('')
         : '<div class="vars-empty">暂无日志</div>';
-    content.innerHTML = '<h3><i data-lucide="scroll-text"></i>操作日志<span class="vars-uuid">共 ' + rows.length + ' 条</span></h3>'
+    content.innerHTML = '<h3><i data-lucide="scroll-text"></i>操作日志<span class="vars-uuid">共 ' + rows.length + ' 条 · ' + esc(AUDIT_FILTERS[AUDIT_FILTER].label) + '</span></h3>'
         + '<div class="modal-body">'
         + '<div class="au-tools">'
         + '<select onchange="openAudit(parseInt(this.value,10))">'
@@ -1600,8 +1612,14 @@ function renderAudit(rows) {
         + '<option value="300"' + (AUDIT_LIMIT === 300 ? ' selected' : '') + '>最近 300 条</option>'
         + '<option value="1000"' + (AUDIT_LIMIT === 1000 ? ' selected' : '') + '>最近 1000 条</option>'
         + '</select>'
+        + '<select onchange="AUDIT_FILTER=parseInt(this.value,10);openAudit()">'
+        + AUDIT_FILTERS.map(function (f, i) {
+            return '<option value="' + i + '"' + (AUDIT_FILTER === i ? ' selected' : '') + '>' + esc(f.label) + '</option>';
+        }).join('')
+        + '</select>'
         + '<button class="ghost sm" onclick="openAudit()" style="height:30px"><i data-lucide="refresh-cw"></i>刷新</button>'
         + '<button class="ghost sm" onclick="clearAudit()" style="height:30px;color:var(--red,#ff5f56)"><i data-lucide="trash-2"></i>清空</button>'
+        + '<button class="ghost sm" onclick="clearAuditFiltered()" style="height:30px;color:var(--red,#ff5f56)"><i data-lucide="filter-x"></i>清当前类</button>'
         + '</div>' + body + '</div>';
     icons();
 }
@@ -1620,6 +1638,27 @@ function clearAudit() {
             else toast((j && j.message) || '清空失败', false);
         })
         .catch(function () { toast('清空失败, 请重试', false); });
+}
+
+/* 按当前过滤类型清理日志: 过滤为"全部"时提示先选类型; 服务端删除匹配类型行并留痕 */
+function clearAuditFiltered() {
+    var f = AUDIT_FILTERS[AUDIT_FILTER];
+    if (f.qs === '') { toast('先在类型下拉选择要清理的类型', false); return; }
+    var act = f.qs.indexOf('action=') >= 0
+        ? decodeURIComponent(f.qs.split('action=')[1])
+        : decodeURIComponent(f.qs.split('exclude=')[1]);
+    if (!window.confirm('确定清理类型「' + act + '」的全部日志？其他类型保留。')) return;
+    fetch('/api/monitor/audit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: KEY, action: act })
+    })
+        .then(function (r) { return r.json(); })
+        .then(function (j) {
+            if (j && j.success) { toast('已清理 ' + act + ' ' + (j.removed || 0) + ' 条', true); openAudit(); }
+            else toast((j && j.message) || '清理失败', false);
+        })
+        .catch(function () { toast('清理失败, 请重试', false); });
 }
 
 /* 客户修改密码: 旧密码 + 新密码 (8-32 位字母数字, 与旧不同) + 确认;
