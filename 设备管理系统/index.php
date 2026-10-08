@@ -1703,19 +1703,41 @@ function handleMonitorThumb($body) {
 /* 在线判定阈值: 60 秒心跳, 2.5 个周期无心跳判离线 */
 define('MONITOR_ONLINE_MS', 150000);
 
-/* 审计日志查询 (仅管理员): GET /api/monitor/audit?key=...&limit=N
- *   &action=a,b  只含指定类型 (逗号分隔, 精确匹配)
- *   &exclude=a,b 排除指定类型 (如 exclude=下发确认)
+/* 审计日志查询 (管理员 key 全量 / 客户 token 仅绑定设备): GET /api/monitor/audit?key=... 或 &token=...
+ *   &limit=N          条数 (默认 300, 上限 2000)
+ *   &uuid=X           单设备过滤 (客户模式须为绑定设备, 否则 403)
+ *   &action=a,b       只含指定类型 (逗号分隔, 精确匹配)
+ *   &exclude=a,b      排除指定类型 (如 exclude=下发确认)
  * 从 audit.log 尾部高效读取, 解析为 {ts, action, detail} 倒序返回;
- * 过滤嵌入读取循环: 读满过滤后的 limit 条才停 (scanned 上限防超大文件全扫) */
+ * 过滤嵌入读取循环: 读满过滤后的 limit 条才停 (scanned 上限防超大文件全扫);
+ * 客户模式按 detail.device 掩码 (maskId) 匹配绑定设备集, 无 device 字段的行跳过 */
 function handleMonitorAudit($query) {
     global $LOG_DIR;
     if (adminFailCheck(clientIp())) respond(array('success' => false, 'message' => '失败次数过多, IP 已被暂时封禁'), 429);
-    if (!monitorAuth(strval(isset($query['key']) ? $query['key'] : ''))) {
-        adminFail(clientIp());
-        respond(array('success' => false, 'message' => '密钥错误'), 401);
+    $tk = preg_replace('/[^0-9a-f]/', '', strval(isset($query['token']) ? $query['token'] : ''));
+    $devMask = '';       /* 单设备掩码过滤 (uuid 参数) */
+    $devAllow = null;    /* null=管理员全量; array=客户绑定设备掩码集 */
+    if ($tk !== '') {
+        /* 客户模式: token 登录, 仅看绑定设备日志 (uuid 参数须在绑定集内) */
+        $userId = monTokenCheck($tk);
+        if (!$userId) respond(array('success' => false, 'message' => '登录已过期, 请重新登录'), 401);
+        $uuids = monUserUuids($userId);
+        $devAllow = array();
+        foreach ($uuids as $u) $devAllow[] = maskId($u);
+        $uq = strtoupper(preg_replace('/[^0-9A-Fa-f\-]/', '', strval(isset($query['uuid']) ? $query['uuid'] : '')));
+        if ($uq !== '') {
+            if (!in_array($uq, $uuids)) respond(array('success' => false, 'message' => '该设备未绑定在此账号下'), 403);
+            $devMask = maskId($uq);
+        }
+    } else {
+        if (!monitorAuth(strval(isset($query['key']) ? $query['key'] : ''))) {
+            adminFail(clientIp());
+            respond(array('success' => false, 'message' => '密钥错误'), 401);
+        }
+        adminFailClear(clientIp());
+        $uq = strtoupper(preg_replace('/[^0-9A-Fa-f\-]/', '', strval(isset($query['uuid']) ? $query['uuid'] : '')));
+        if ($uq !== '') $devMask = maskId($uq);
     }
-    adminFailClear(clientIp());
     $limit = intval(isset($query['limit']) ? $query['limit'] : 300);
     if ($limit < 1) $limit = 300;
     if ($limit > 2000) $limit = 2000;
@@ -1749,7 +1771,11 @@ function handleMonitorAudit($query) {
                     if (count($actIn) > 0 && !in_array($act, $actIn)) continue;
                     if (count($actEx) > 0 && in_array($act, $actEx)) continue;
                     $d = json_decode($m[3], true);
-                    $rows[] = array('ts' => $m[1], 'action' => $act, 'detail' => is_array($d) ? $d : array('raw' => $m[3]));
+                    if (!is_array($d)) $d = array('raw' => $m[3]);
+                    /* 设备归属过滤: 单设备 (uuid 参数) 或客户绑定集; 无 device 字段的行对客户不可见 */
+                    if ($devMask !== '' && strval(isset($d['device']) ? $d['device'] : '') !== $devMask) continue;
+                    if (is_array($devAllow) && !in_array(strval(isset($d['device']) ? $d['device'] : ''), $devAllow)) continue;
+                    $rows[] = array('ts' => $m[1], 'action' => $act, 'detail' => $d);
                     if (count($rows) >= $limit) break;
                 }
             }

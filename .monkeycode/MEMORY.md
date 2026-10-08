@@ -78,9 +78,11 @@ Entries discovered by the Agent during task execution should follow this format:
   - 审计日志增强（26-09-27）：配置上发带 cfg/edit 内容摘要（name=count 压缩）；变量修改/配置变量修改带 diff（字段: 旧->新/新增/删除，过滤"上次修改"噪音）+ content 快照；摘要截断用 PCRE /u 按字符对齐，环境无 mbstring，禁用 mb_* 函数；本地测试审计在 /workspace/carddata/logs/audit.log（站点外，LOG_DIR=dirname(__DIR__)+'/carddata'）
   - "串台"结论（26-09-27）：服务端 monitor_vars 按 uuid 分行完全独立；所谓串=设备"上发配置=1"用本地旧值反复覆盖自己基线+业务脚本每轮重写变量，两台脚本同源默认值相同造成串的错觉；排查靠 audit.log 的上发摘要/diff 直接看值
   - 审计操作者身份（26-09-27）：auditLog 各点带 by 字段（管理员/账号 {username}/设备），monActorLabel 按 body 的 key/token 分类，token 经 monitor_users 查用户名；GET /api/monitor/audit?key=&limit=（仅 key 认证，尾部读取倒序返回）为管理员专属日志接口；status.html adminBar"日志"按钮（ACC_MODE 无入口）→ au-row 弹窗（时间/操作/操作者/设备/详情）
-  - 部署坑（26-09-27）：byethost FTP 偶发上传截断（138KB 只传了 7KB 且返回 226 成功），必须回读 cmp 校验，不一致就重传；本地起两个 php -S（byethost-deploy 与 设备管理系统）共写 /workspace/carddata/logs/audit.log 会交错乱序，audit 尾部读取按物理行序取最新 limit 条
+  - 日志噪音排查（26-10-08）：线上 audit.log 曾堆 5407 条"下发确认"（每心跳一条），根因 handleMonitorVars 函数头漏 `global $LOG_DIR` → ack 锚点文件拼成根路径 /ack_*.json 读写全败，去噪恒失效；教训：PHP 函数内用全局路径变量必须声明 global（auditLog 自己有声明所以日志文件正常可写，具迷惑性）；已修 + audit 接口加 action/exclude 过滤参数 + 按类型清理（POST audit body.action），前端操作日志弹窗加类型下拉与"清当前类"按钮
+  - 客户查看绑定设备日志（26-10-08）：GET /api/monitor/audit 双认证——key=管理员全量、token=客户仅绑定设备；客户模式 devAllow=绑定 uuid 的 maskId 掩码集，行 detail.device 掩码不在集内即跳过，无 device 字段的行客户不可见；可选 uuid 参数单设备过滤，客户模式 uuid 不在绑定集返回 403"该设备未绑定在此账号下"；maskId 格式=前 8 字符+***；前端抽 renderAuditRows 共用，openDeviceLog 设备卡日志按钮，客户模式带 X-CSRF-Token header + accExpired 401 处理；本地验证：注册(需验证码,答案在 state/monu_cap.json)拿 token/csrf，bind 需 X-CSRF-Token header，绑定设备可见/未绑定403/不带uuid仅绑定集均通过；已部署 cmp 一致，线上探针 key+EAD4 过滤返回空正常
+  - 部署坑（26-09-27）：byethost FTP 偶发上传截断（138KB 只传了 7KB 且返回 226 成功），必须回读 cmp 校验，不一致就重传；本地起两个 php -S（byethost-deploy 与 设备管理系统）共写 /workspace/carddata/logs/audit.log 会交错乱序，audit 尾部读取按物理行序取最新 limit 条；FTP 回读大文件也常 transfer closed（用 --retry-all-errors 重试 curl），HTTP GET 页面受 slowAES 挑战拖慢会超时、API POST JSON 不受挑战可直接探针，验证线上版本优先 API 探针+FTP cmp；线上探针用无流量设备 EAD4-CE4B-6EF7-BBCD（92B4/7F4A 是 1.2.0 真实设备，勿写测试数据）
   - 客户端版本号（26-09-27）：monitor.js MON_VERSION 常量随心跳 payload.ver 上报 → client_status.mon_ver 列（迁移数组幂等加列）→ list SELECT * 自动带出 → 设备卡"客户端"行显示（未上报显示"旧版(未上报)"）；升级 monitor.js 时同步改 MON_VERSION
-  - 本地测试套件（26-09-27 全过）：test_screen(13)+test_audit_detail(17)+test_audit_actor(14)+test_monver(5)+test_configvar(20)；连跑需间隔 60s（setvars 限频 30/分）；测试 fixture 自清理约定——state 文件测试内 unlink 自己的产物，缩略图限频用 touch 拨老 mtime 绕开（不删除）；旧客户端 report 分支 INSERT 必须补全所有 NOT NULL 无默认值列（MySQL 严格模式）
+  - 本地测试套件（26-09-27 全过）：test_screen(13)+test_audit_detail(17)+test_audit_actor(14)+test_monver(5)+test_configvar(20)；连跑需间隔 60s（setvars 限频 30/分）；测试 fixture 自清理约定——state 文件测试内 unlink 自己的产物，缩略图限频用 touch 拨老 mtime 绕开（不删除）；旧客户端 report 分支 INSERT 必须补全所有 NOT NULL 无默认值列（MySQL 严格模式）；monitor_vars 表加列时（26-10-05 备用项 edit_backup/config_backup）全库 7 处 INSERT 语句都要同步补列+bind_param 类型串（类型串长度必须等于变量个数，ssssssssi=8s+i），MariaDB/MySQL 的 TEXT 列都不用 DEFAULT 兜底、靠 INSERT 显式带列
 
 [Project Knowledge Summary]
 - Date: 2026-09-18
@@ -200,6 +202,27 @@ Entries discovered by the Agent during task execution should follow this format:
   - freedns 风格验证码实现：TTF 实心字画 200x260 高分辨率画布 → 列+行正弦扭曲（波长 52-105px，频率过高会揉碎字符）→ 轮廓提取（±2 偏移 4 点全墨=内部跳过，边缘点涂+4邻域膨胀）→ imagecopyresampled 下采样贴回
   - 轮廓提取逻辑曾写反（写成"任一偏移非墨就跳过"=只涂内部点），正确逻辑是"全墨才 continue"；诊断法：单字符分阶段渲染（solid/warp/edge/small）拼图排查
   - ByetHost PHP 8.4.25 GD 性能足够（单字符全流程 11ms），验证码 500 根因排查用"伪造 REQUEST_URI include index.php + register_shutdown_function 打印 error_get_last"探针，display_errors 线上是关的
+
+[Project Knowledge Summary]
+- Date: 2026-10-03
+- Context: Discovered by Agent while 排查"编辑配置下发命令跨设备串台"问题
+- Category: Troubleshooting & Debugging | Operations & Deployment
+- Instructions:
+  - 设备监控系统管理密钥 732b5df1cd7204c10948cd5b63c28e28（status.html 页头说明里用户输入）；status.html 客户模式输设备 UUID 查看
+  - ByetHost 挑战捷径：UA 用 Googlebot/2.1 (+http://www.google.com/bot.html)（即设备端 MON_UA）直接免挑战，无需解 __test cookie；解法可用 openssl enc -d -aes-128-cbc 解单块
+  - "编辑配置混命令"排查结论（三因素叠加，服务端 monitor_vars 按 uuid 隔离无串行）：1) 两台设备业务脚本同源、配置默认值相同（如定时时间 00:10:00-23:55:00），A 被下发的值恰为 B 默认值时看似"命令跑到 B"；2) 业务脚本每轮重写"配置变量"冲掉已应用的下发（ack 已回传服务端停发，下发改不动，用户会重复保存）；3) status.html openVars 弹窗 fetch 无守卫竞态（已修：VARS_SEQ 序号守卫 + closeModal 失效，过期响应丢弃），慢主机上先点 A 后点 B 时 A 响应后到会用 A 数据渲染 B 标题弹窗，编辑保存即真串台
+  - audit.log 的"下发确认"会因 ack 锚点不稳定每 2 分钟刷屏（一次拉 2000 条才见变量修改记录），排障时先按 action 过滤再分析
+
+[Project Knowledge Summary]
+- Date: 2026-10-03
+- Context: Discovered by Agent while 排查客户端 1.2.0 比 1.1.0 闪退严重
+- Category: Troubleshooting & Debugging | Build Methods
+- Instructions:
+  - 1.1.0→1.2.0 的 monitor.js 增量仅 91 行：新增「画面静止秒」变量 + 缩略图改为"先行"（从心跳后挪到心跳前）+ 心跳失败写 -2
+  - 闪退根因：1.2.0 缩略图先行 = 每次心跳前连续同步 http.upload(慢图)+postJson(vars)+postJson(report)，慢主机单周期可拖到 51s（线上实测 7F4A 缩略图-心跳间隔 51s 后崩溃）；主线程被慢上传长时间阻塞
+  - 修复（26-10-03）：monThumbUpload 改 http.upload 回调式异步（autox 系支持第 4 参 callback），发起即返回不阻塞心跳；截屏/120s 节流仍同步，结果/日志/画面状态/删临时文件全放回调，临时文件必须在回调里删（提前删上传读不到）；monMaybeThumb 移除返回值处理。已在部署源改 + FTP 部署回读 cmp 一致，设备端需重启任务重载 monitor.js 生效
+  - 插件的 slog 只 console.log 不落盘，崩溃现场无日志可查，只能靠线上心跳/缩略图时间戳快照佐证
+  - 设备端 http 超时：编辑器 http 支持 http.setTimeout(N)（v2.js 647 行有用例），同步请求可设超时兜底
 [User Instruction Summary]
 - Date: 2026-09-24
 - Context: 讨论云机诊断项采集方案时 (Android版本/启动时长/存储空间原本各拟用 Java API)

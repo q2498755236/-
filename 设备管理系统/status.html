@@ -1050,6 +1050,7 @@ function renderAll(j) {
             + '<button class="' + clsIdle.trim() + '" onclick="setStatus(\'挂机\',\'' + esc(d.uuid) + '\')"><i data-lucide="coffee"></i>挂机</button>'
             + '<button class="' + clsOff.trim() + '" onclick="setStatus(\'离线\',\'' + esc(d.uuid) + '\')"><i data-lucide="power-off"></i>离线</button>'
             + '<button title="设备变量" onclick="openVars(\'' + esc(d.uuid) + '\')"><i data-lucide="braces"></i></button>'
+            + '<button title="设备日志" onclick="openDeviceLog(\'' + esc(d.uuid) + '\')"><i data-lucide="scroll-text"></i></button>'
             + '<button class="del" title="删除设备" onclick="deleteDevice(\'' + esc(d.uuid) + '\',\'\')"><i data-lucide="trash-2"></i></button>';
         el.appendChild(row);
     });
@@ -1165,6 +1166,7 @@ function renderBinds(j) {
             + '<button class="' + clsIdle.trim() + '" onclick="setStatus(\'挂机\',\'' + esc(d.uuid) + '\')"><i data-lucide="coffee"></i>挂机</button>'
             + '<button class="' + clsOff.trim() + '" onclick="setStatus(\'离线\',\'' + esc(d.uuid) + '\')"><i data-lucide="power-off"></i>离线</button>'
             + '<button title="设备变量" onclick="openVars(\'' + esc(d.uuid) + '\')"><i data-lucide="braces"></i></button>'
+            + '<button title="设备日志" onclick="openDeviceLog(\'' + esc(d.uuid) + '\')"><i data-lucide="scroll-text"></i></button>'
             + '<button class="unbind" onclick="unbindDevice(\'' + esc(d.uuid) + '\')"><i data-lucide="link-2-off"></i>解绑</button>';
         el.appendChild(row);
     });
@@ -1560,50 +1562,54 @@ function openAudit(limit) {
         })
         .catch(function () { toast('读取失败, 请重试', false); closeModal(); });
 }
+/* 审计日志行渲染 (管理员日志弹窗与客户设备日志弹窗共用) */
+function renderAuditRows(rows) {
+    var SKIP = { by: 1, device: 1, uuid: 1, diff: 1, content: 1, cfg: 1, edit: 1, cfgContent: 1, editContent: 1 };
+    if (!rows.length) return '<div class="vars-empty">暂无日志</div>';
+    return '<div class="au-head"><span>TIME</span><span>ACTION</span><span>BY</span><span>DEVICE</span><span class="au-det">DETAIL</span></div>'
+        + rows.map(function (r) {
+            var d = r.detail || {};
+            var by = String(d.by || '');
+            var dev = String(d.device || d.uuid || d.code || '');
+            var rest = Object.keys(d).filter(function (k) { return !SKIP[k]; })
+                .map(function (k) { return k + '=' + String(d[k]); }).join('; ');
+            var cls = by === '管理员' ? 'au-admin' : (by.indexOf('账号') === 0 ? 'au-user' : 'au-dev');
+            /* 变更明细: 字段: 旧值 -> 新值 (含 新增/删除), 有修改的操作单独高亮展示 */
+            var diff = String(d.diff || '');
+            var diffHtml = '';
+            if (diff !== '') {
+                diffHtml = '<div class="au-diff"><span class="au-df-t">变更</span>'
+                    + diff.split('; ').map(function (s) {
+                        var m = s.match(/^(.+?):\s*(.+?)\s*->\s*(.+)$/);
+                        if (m) return '<div class="au-df-l"><span class="au-df-k">' + esc(m[1]) + '</span>'
+                            + '<s>' + esc(m[2]) + '</s><i data-lucide="chevrons-right"></i><b>' + esc(m[3]) + '</b></div>';
+                        return '<div class="au-df-l">' + esc(s) + '</div>';
+                    }).join('') + '</div>';
+            }
+            /* 内容快照: 点击展开全文 (content=网页保存快照, cfgContent=设备上发配置, editContent=设备上发修改变量;
+             * 旧日志无 *Content 字段时兜底显示 cfg/edit 摘要) */
+            var snaps = [];
+            if (String(d.content || '') !== '') snaps.push(['内容', String(d.content)]);
+            else if (String(d.cfg || d.edit || '') !== '') snaps.push(['内容', String(d.cfg || d.edit)]);
+            if (String(d.cfgContent || '') !== '') snaps.push(['上发配置', String(d.cfgContent)]);
+            if (String(d.editContent || '') !== '') snaps.push(['上发修改', String(d.editContent)]);
+            var snapHtml = snaps.map(function (s) {
+                return '<details class="au-content"><summary>' + esc(s[0]) + ' (' + s[1].length + ' 字符)</summary><div class="au-snap">' + esc(s[1]) + '</div></details>';
+            }).join('');
+            return '<div class="au-wrap">'
+                + '<div class="au-row">'
+                + '<span class="au-ts">' + esc(fmtAuditTs(r.ts)) + '</span>'
+                + '<span class="au-act">' + esc(r.action) + '</span>'
+                + '<span class="au-by ' + cls + '">' + esc(by || '-') + '</span>'
+                + '<span class="au-dev">' + esc(dev || '-') + '</span>'
+                + '<span class="au-det">' + esc(rest || '-') + '</span></div>'
+                + diffHtml + snapHtml + '</div>';
+        }).join('');
+}
+
 function renderAudit(rows) {
     var content = document.getElementById('modalContent');
-    var SKIP = { by: 1, device: 1, uuid: 1, diff: 1, content: 1, cfg: 1, edit: 1, cfgContent: 1, editContent: 1 };
-    var body = rows.length
-        ? '<div class="au-head"><span>TIME</span><span>ACTION</span><span>BY</span><span>DEVICE</span><span class="au-det">DETAIL</span></div>'
-            + rows.map(function (r) {
-                var d = r.detail || {};
-                var by = String(d.by || '');
-                var dev = String(d.device || d.uuid || d.code || '');
-                var rest = Object.keys(d).filter(function (k) { return !SKIP[k]; })
-                    .map(function (k) { return k + '=' + String(d[k]); }).join('; ');
-                var cls = by === '管理员' ? 'au-admin' : (by.indexOf('账号') === 0 ? 'au-user' : 'au-dev');
-                /* 变更明细: 字段: 旧值 -> 新值 (含 新增/删除), 有修改的操作单独高亮展示 */
-                var diff = String(d.diff || '');
-                var diffHtml = '';
-                if (diff !== '') {
-                    diffHtml = '<div class="au-diff"><span class="au-df-t">变更</span>'
-                        + diff.split('; ').map(function (s) {
-                            var m = s.match(/^(.+?):\s*(.+?)\s*->\s*(.+)$/);
-                            if (m) return '<div class="au-df-l"><span class="au-df-k">' + esc(m[1]) + '</span>'
-                                + '<s>' + esc(m[2]) + '</s><i data-lucide="chevrons-right"></i><b>' + esc(m[3]) + '</b></div>';
-                            return '<div class="au-df-l">' + esc(s) + '</div>';
-                        }).join('') + '</div>';
-                }
-                /* 内容快照: 点击展开全文 (content=网页保存快照, cfgContent=设备上发配置, editContent=设备上发修改变量;
-                 * 旧日志无 *Content 字段时兜底显示 cfg/edit 摘要) */
-                var snaps = [];
-                if (String(d.content || '') !== '') snaps.push(['内容', String(d.content)]);
-                else if (String(d.cfg || d.edit || '') !== '') snaps.push(['内容', String(d.cfg || d.edit)]);
-                if (String(d.cfgContent || '') !== '') snaps.push(['上发配置', String(d.cfgContent)]);
-                if (String(d.editContent || '') !== '') snaps.push(['上发修改', String(d.editContent)]);
-                var snapHtml = snaps.map(function (s) {
-                    return '<details class="au-content"><summary>' + esc(s[0]) + ' (' + s[1].length + ' 字符)</summary><div class="au-snap">' + esc(s[1]) + '</div></details>';
-                }).join('');
-                return '<div class="au-wrap">'
-                    + '<div class="au-row">'
-                    + '<span class="au-ts">' + esc(fmtAuditTs(r.ts)) + '</span>'
-                    + '<span class="au-act">' + esc(r.action) + '</span>'
-                    + '<span class="au-by ' + cls + '">' + esc(by || '-') + '</span>'
-                    + '<span class="au-dev">' + esc(dev || '-') + '</span>'
-                    + '<span class="au-det">' + esc(rest || '-') + '</span></div>'
-                    + diffHtml + snapHtml + '</div>';
-            }).join('')
-        : '<div class="vars-empty">暂无日志</div>';
+    var body = renderAuditRows(rows);
     content.innerHTML = '<h3><i data-lucide="scroll-text"></i>操作日志<span class="vars-uuid">共 ' + rows.length + ' 条 · ' + esc(AUDIT_FILTERS[AUDIT_FILTER].label) + '</span></h3>'
         + '<div class="modal-body">'
         + '<div class="au-tools">'
@@ -1622,6 +1628,37 @@ function renderAudit(rows) {
         + '<button class="ghost sm" onclick="clearAuditFiltered()" style="height:30px;color:var(--red,#ff5f56)"><i data-lucide="filter-x"></i>清当前类</button>'
         + '</div>' + body + '</div>';
     icons();
+}
+
+/* 设备日志弹窗 (管理员/客户通用): 单设备审计记录, 客户模式 token 认证仅限绑定设备 */
+function openDeviceLog(uuid) {
+    var content = document.getElementById('modalContent');
+    content.innerHTML = '<h3><i data-lucide="scroll-text"></i>设备日志<span class="vars-uuid">' + esc(uuid) + '</span></h3>'
+        + '<div class="modal-body">加载中...</div>';
+    document.getElementById('modalOverlay').style.display = 'flex';
+    icons();
+    var url = '/api/monitor/audit?limit=300&uuid=' + encodeURIComponent(uuid);
+    var hdrs = {};
+    if (ACC_MODE) {
+        url += '&token=' + encodeURIComponent(localStorage.getItem('monitor_token') || '');
+        hdrs['X-CSRF-Token'] = localStorage.getItem('monitor_csrf') || '';
+    } else {
+        url += '&key=' + encodeURIComponent(KEY);
+    }
+    fetch(url, { method: 'GET', headers: hdrs })
+        .then(function (r) {
+            if (r.status === 401 && ACC_MODE) { accExpired(); return null; }
+            return r.json();
+        })
+        .then(function (j) {
+            if (!j) return;
+            if (!j.success) { toast(j.message || '读取失败', false); closeModal(); return; }
+            var rows = j.rows || [];
+            document.getElementById('modalContent').innerHTML = '<h3><i data-lucide="scroll-text"></i>设备日志<span class="vars-uuid">' + esc(uuid) + ' · 共 ' + rows.length + ' 条</span></h3>'
+                + '<div class="modal-body">' + renderAuditRows(rows) + '</div>';
+            icons();
+        })
+        .catch(function () { toast('读取失败, 请重试', false); closeModal(); });
 }
 
 /* 清空审计日志: 二次确认, 成功后重拉列表 (服务端会写入一条"日志清空"留痕) */
