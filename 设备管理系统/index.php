@@ -1330,6 +1330,17 @@ function handleMonitorReport($body) {
         if ($dv !== null && strlen($vv) <= 65536 && strlen($dv) <= 65536) {
             $cvd = isset($body['configVarDev']) && is_string($body['configVarDev']) ? strval($body['configVarDev']) : '';
             if ($upCfg) {
+                /* 覆盖前比对"上次修改": 设备上发早于基线 => 设备尚未应用最新下发, 覆盖会丢失待下发内容 */
+                $editCover = true;
+                $stOldE = dbAcc()->prepare("SELECT edit_var FROM monitor_vars WHERE uuid = ?");
+                if ($stOldE) {
+                    $stOldE->bind_param('s', $repUuid);
+                    $stOldE->execute();
+                    $oldRowE = $stOldE->get_result()->fetch_assoc();
+                    $stOldE->close();
+                    $editCover = monUploadAllowCover($dv, strval(isset($oldRowE['edit_var']) ? $oldRowE['edit_var'] : ''));
+                }
+                if ($editCover) {
                 $stV = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE view_var = VALUES(view_var), edit_var_dev = VALUES(edit_var_dev), edit_var = VALUES(edit_var), updated_ms = VALUES(updated_ms)");
                 if ($stV) {
                     $stV->bind_param('ssssssssi', $repUuid, $vv, $dv, $dv, $cvd, $empty, $empty, $empty, $nowV);
@@ -1339,6 +1350,18 @@ function handleMonitorReport($body) {
                     auditLog('配置上发', array('device' => maskId($repUuid), 'by' => '设备', 'editLen' => strlen($dv), 'cfgLen' => strlen($cvd),
                         'cfg' => monVarsDigest($cvd), 'edit' => monVarsDigest($dv),
                         'cfgContent' => utf8Truncate($cvd, 2000), 'editContent' => utf8Truncate($dv, 2000)));
+                    $upCfgAudited = true;   /* edit+config 同发时只记一次, config 覆盖分支据此跳过 */
+                }
+                } else {
+                    /* 保护性跳过: 仅更新 dev 镜像列, 下发基线保留, 留审计供网页排查 */
+                    $stV = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE view_var = VALUES(view_var), edit_var_dev = VALUES(edit_var_dev), updated_ms = VALUES(updated_ms)");
+                    if ($stV) {
+                        $stV->bind_param('ssssssssi', $repUuid, $vv, $dv, $empty, $cvd, $empty, $empty, $empty, $nowV);
+                        $stV->execute();
+                        $stV->close();
+                    }
+                    auditLog('上发跳过', array('device' => maskId($repUuid), 'by' => '设备', 'editLen' => strlen($dv),
+                        'devStamp' => monStampOf($dv), 'reason' => '修改变量上发早于下发基线, 设备未应用最新下发'));
                 }
             } else {
                 $stV = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE view_var = VALUES(view_var), edit_var_dev = VALUES(edit_var_dev), updated_ms = VALUES(updated_ms)");
@@ -1364,16 +1387,44 @@ function handleMonitorReport($body) {
         $nowC = nowMs();
         $emptyC = '';
         if ($upCfg) {
+            /* 覆盖前比对"上次修改": 设备上发早于基线 => 设备尚未应用最新下发, 覆盖会丢失待下发内容 */
+            $cfgCover = true;
+            $stOldC = dbAcc()->prepare("SELECT config_var FROM monitor_vars WHERE uuid = ?");
+            if ($stOldC) {
+                $stOldC->bind_param('s', $repUuid);
+                $stOldC->execute();
+                $oldRowC = $stOldC->get_result()->fetch_assoc();
+                $stOldC->close();
+                $cfgCover = monUploadAllowCover($cv, strval(isset($oldRowC['config_var']) ? $oldRowC['config_var'] : ''));
+            }
+            if ($cfgCover) {
             $stC = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE config_var_dev = VALUES(config_var_dev), config_var = VALUES(config_var), updated_ms = VALUES(updated_ms)");
             if ($stC) {
-                $stC->bind_param('ssssssssi', $repUuid, $emptyC, $emptyC, $emptyC, $cv, $cv, $empty, $empty, $nowC);
+                $stC->bind_param('ssssssssi', $repUuid, $emptyC, $emptyC, $emptyC, $cv, $cv, $emptyC, $emptyC, $nowC);
                 $stC->execute();
                 $stC->close();
+            }
+            if (empty($upCfgAudited)) {
+                /* config 单独上发覆盖成功也留审计 (edit 分支已记过则跳过防重复) */
+                auditLog('配置上发', array('device' => maskId($repUuid), 'by' => '设备', 'editLen' => 0, 'cfgLen' => strlen($cv),
+                    'cfg' => monVarsDigest($cv), 'edit' => '',
+                    'cfgContent' => utf8Truncate($cv, 2000), 'editContent' => ''));
+            }
+            } else {
+                /* 保护性跳过: 仅更新 dev 镜像列, 下发基线保留, 留审计供网页排查 */
+                $stC = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE config_var_dev = VALUES(config_var_dev), updated_ms = VALUES(updated_ms)");
+                if ($stC) {
+                    $stC->bind_param('ssssssssi', $repUuid, $emptyC, $emptyC, $emptyC, $cv, $emptyC, $emptyC, $emptyC, $nowC);
+                    $stC->execute();
+                    $stC->close();
+                }
+                auditLog('上发跳过', array('device' => maskId($repUuid), 'by' => '设备', 'cfgLen' => strlen($cv),
+                    'devStamp' => monStampOf($cv), 'reason' => '配置变量上发早于下发基线, 设备未应用最新下发'));
             }
         } else {
             $stC = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE config_var_dev = VALUES(config_var_dev), updated_ms = VALUES(updated_ms)");
             if ($stC) {
-                $stC->bind_param('ssssssssi', $repUuid, $emptyC, $emptyC, $emptyC, $cv, $emptyC, $empty, $empty, $nowC);
+                $stC->bind_param('ssssssssi', $repUuid, $emptyC, $emptyC, $emptyC, $cv, $emptyC, $emptyC, $emptyC, $nowC);
                 $stC->execute();
                 $stC->close();
             }
@@ -2580,6 +2631,19 @@ function monStampOf($content) {
         }
     }
     return '';
+}
+
+/* 上发基线覆盖判定 (uploadCfg=1 时反向覆盖下发基线前的保护):
+ * 设备上发内容"上次修改"早于服务端基线 => 设备尚未应用最新下发 (离线/应用失败/业务脚本模板重写),
+ * 此刻覆盖会把待下发的新内容冲掉且无任何痕迹 (未应用越久越必丢);
+ * 时间戳由服务端 saveVars 生成, 设备原样带回, 字符串比较即时间比较 (格式固定 字典序=时间序);
+ * 返回 true=允许覆盖 */
+function monUploadAllowCover($devContent, $baseContent) {
+    $devStamp = monStampOf($devContent);
+    if ($devStamp === '') return true;    /* 非数组/无时间戳: 保持原逻辑兼容 */
+    $baseStamp = monStampOf($baseContent);
+    if ($baseStamp === '') return true;   /* 基线无时间戳 (首次导入/空基线): 覆盖 */
+    return strcmp($devStamp, $baseStamp) >= 0;
 }
 
 /* 变量内容摘要 (审计用): 数组按 "name=count; ..." 压缩, 非数组/解析失败退化为原文截断;
