@@ -195,3 +195,13 @@ Entries discovered by the Agent during task execution should follow this format:
 - Context: 讨论云机诊断项采集方案时 (Android版本/启动时长/存储空间原本各拟用 Java API)
 - Instructions:
   - monitor.js 插件开发禁止 Java 互操作 (Packages/SystemClock/StatFs/android.os.* 一律不要), 需要系统能力时优先纯 JS API (auto.*), 无 API 时用 auto.shell 命令替代 (getprop/cat /proc/uptime/df/dumpsys)
+[Project Knowledge Summary]
+- Date: 2026-10-16
+- Context: Discovered by Agent while maa (Maa_mjs_ace-v1.1.28) 接入设备管理系统
+- Category: Build Methods
+- Instructions:
+  - maa APK 结构：Compose 壳 + MaaFramework v5.13 原生库，dex 无业务 HTTP；assets/pi.zip=MAA 项目包（interface.json+agent/main.py+resource），assets/agent/bundle.zip=Chaquopy Python3.13 运行时（maafw 5.13.0/numpy/strenum）；agent-runtime.json 以 python3 -u agent/main.py 启动，AgentServer socket 与 MaaFW 通信
+  - 更新 agent 逻辑=重打 pi.zip 替换 APK assets 后 zipalign -f -p 4 + apksigner 重签；打 pi.zip 必须带显式目录条目（Info-ZIP zip -r 打包），python zipfile os.walk 只写文件条目会导致壳解压后报「读取 interface.json 失败」
+  - monitor 协议（maa 端 monitor_client.py）：/api/monitor/report 心跳+三变量通道（viewVar/editVarDev/configVarDev），/api/monitor/vars 拉取+editAck/configAck 闭环（数组取「上次修改」时间戳、非数组取内容 SHA256）；签名=TOTP（Base32 seed 经 monitor.js _unmask XOR 混淆还原）+HMAC-SHA256("deviceId=..&uuid=..&nonce=..&timestamp=..&totp=..", totp+seed)+nonce 防重放
+  - ByetHost 前置 JS challenge 拦普通 UA，所有客户端统一 UA "Googlebot/2.1 (+http://www.google.com/bot.html)"；md5 样式 UA 会被拦
+  - 挂机时段 run_range（configVar 下发）：「当前时间在时段内」判定 false（未配置/格式无效/时段外）→ 动作入口 post_stop 暂停全部动作只跑心跳，进入时段后下轮任务自动恢复；格式同 monitor.js timeRangeParse（18:00-08:00 跨天/18-8 简写/全角转换/起终相同恒外）
