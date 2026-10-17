@@ -74,6 +74,12 @@ register_shutdown_function(function () {
     }
 });
 
+/* ==================== 时区 ==================== */
+/* 全站时间统一北京时间: 审计日志/备份文件名带 +08:00 offset, "上次修改"时间戳(date)随之对齐;
+ * 设备端闭环不受影响——时间戳由服务端生成、设备原样带回, 字符串同源比对;
+ * 历史审计行为 UTC 的 Z 格式, 前端 new Date() 对两种格式均按 offset 正确解析 */
+date_default_timezone_set('Asia/Shanghai');
+
 /* ==================== 数据目录 ==================== */
 /* 优先放在站点根(htdocs)之外，避免被 HTTP 直接下载；不可写时回退到站内并依赖 .htaccess 拒绝访问 */
 $__dataBase = dirname(__DIR__) . '/carddata';
@@ -140,7 +146,7 @@ function maskId($id) {
 }
 function auditLog($action, $detail) {
     global $LOG_DIR;
-    $ts = gmdate('Y-m-d\TH:i:s.v\Z');
+    $ts = date('Y-m-d\TH:i:s.vP');   /* 北京时间 +08:00 offset (历史行为 UTC Z 格式, 前端均正确解析) */
     @file_put_contents($LOG_DIR . '/audit.log',
         '[' . $ts . '] [INFO] [AUDIT] ' . $action . ' ' . json_encode($detail, JSON_UNESCAPED_UNICODE) . "\n", FILE_APPEND | LOCK_EX);
 }
@@ -848,7 +854,7 @@ function backupData() {
     $cards = getCards();
     if (!$cards) return;
     if (!is_dir($BACKUP_DIR)) @mkdir($BACKUP_DIR, 0755, true);
-    $ts = gmdate('Y-m-d\TH-i-s.v\Z');
+    $ts = date('Y-m-d\TH-i-s.vP');   /* 备份文件名北京时间; 同格式字典序排序逻辑不变 */
     @file_put_contents($BACKUP_DIR . '/cards-' . $ts . '.json', json_encode($cards, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT));
     $backups = glob($BACKUP_DIR . '/cards-*.json');
     if ($backups && count($backups) > $CFG['BACKUP_KEEP']) {
