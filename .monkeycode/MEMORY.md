@@ -230,3 +230,16 @@ Entries discovered by the Agent during task execution should follow this format:
 - Context: 讨论云机诊断项采集方案时 (Android版本/启动时长/存储空间原本各拟用 Java API)
 - Instructions:
   - monitor.js 插件开发禁止 Java 互操作 (Packages/SystemClock/StatFs/android.os.* 一律不要), 需要系统能力时优先纯 JS API (auto.*), 无 API 时用 auto.shell 命令替代 (getprop/cat /proc/uptime/df/dumpsys)
+
+[Project Knowledge Summary]
+- Date: 2026-10-18
+- Context: 7F4A "定时时间 00:10 反复出现"排查 (用户设备死机闪退重启后配置不统一质疑)
+- Category: Troubleshooting & Debugging
+- Instructions:
+  - 判别设备数组变化来源的指纹法: 看镜像"上次修改"时间戳——服务端下发=整包替换带当次基线新时间戳; 本地脚本模板重写=冻结在模板固化时的旧值; 服务端 10-17 后没发过的旧时间戳版本=本地留存内容
+  - **"00 错误下发"根因 (用户长期反馈)**: 编辑弹窗 stopped=true 时底稿取设备上报内容 (editVarsForm), 设备数组被本地回滚/脚本改写成旧值后, 用户改其他字段保存即把设备旧值整包固化入基线误下发; 修复=devDiverged 标记+红色警告条+saveVars 前 window.confirm 强制确认 (5e14bb5, 26-10-18 已部署)
+  - 编辑器日志"上报 xx→xx"归因的是动作执行链 (monitor.js 的 vars 拉取+应用在心跳上报动作内), 服务端下发和脚本写回都可能显示为"上报", 不能仅凭日志归因断定来源, 必须叠加时间戳指纹
+  - monitor_vars 的 edit_backup/config_backup 列是网页"备用槽草稿"(backup1/backup2 字段, 2831 行注释, 与下发隔离), 不是基线历史备份, 勿当基线变更证据
+  - 长度比对陷阱: PHP strlen 按字节 (UTF-8 中文 3 字节), Python len 按字符, 384B(PHP)≈291 字符(Python)是同一内容, 跨语言比对长度先统一口径
+  - 打破停发重发基线: 管理员 key 调 setvars 原样回传 config_var (monEnsureStamp 刷新"上次修改") → 设备 ack 不匹配自动重拉应用; 7F4A 实测 30s 内应用+镜像追平+下发确认闭环
+  - 停发判定只看设备 applied 文件 ack, 设备本地数组被回滚服务端无感 (ack 不回传数组内容)——镜像≠基线且 applied==基线=闭环盲区; 已落地服务端自愈 (26-10-18, monDriftResend): report 上报 configVarDev 时比对镜像与基线语义 diff (monVarsDiff 过滤"上次修改"), 超过 MON_DRIFT_RESEND_SEC=1800s 未收敛则 monEnsureStamp 重打基线时间戳自动重发, monitor_vars.resend_ms 限频防拉锯, 审计类型"漂移重发"(by=系统, 含 devStamp/baseStamp/diff), 人工 setvars 保存清零 resend_ms 重新计时

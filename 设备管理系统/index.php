@@ -23,6 +23,7 @@ $CFG = array(
     'RATE_LIMIT_API'      => 10,
     'RATE_LIMIT_ADMIN'    => 10,
     'BACKUP_KEEP'         => 10,
+    'MON_DRIFT_RESEND_SEC' => 1800,
     'MAX_NONCE_CACHE'     => 50000,
     'MAX_SALT_CACHE'      => 50000,
     'MAX_TOKEN_CACHE'     => 50000,
@@ -257,6 +258,10 @@ function dbAcc() {
     $__rV = $__accDb->query("SELECT 1 FROM information_schema.COLUMNS
         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'monitor_vars' AND COLUMN_NAME = 'config_backup'");
     if ($__rV && !$__rV->fetch_assoc()) $__accDb->query("ALTER TABLE monitor_vars ADD COLUMN config_backup MEDIUMTEXT NOT NULL AFTER edit_backup");
+    /* 配置漂移自愈限频列 (26-10-18): 上次自动重发基线时间戳的时刻, 0=未触发过 */
+    $__rV = $__accDb->query("SELECT 1 FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'monitor_vars' AND COLUMN_NAME = 'resend_ms'");
+    if ($__rV && !$__rV->fetch_assoc()) $__accDb->query("ALTER TABLE monitor_vars ADD COLUMN resend_ms BIGINT NOT NULL DEFAULT 0 AFTER updated_ms");
     return $__accDb;
 }
 
@@ -1434,6 +1439,8 @@ function handleMonitorReport($body) {
                 $stC->execute();
                 $stC->close();
             }
+            /* 漂移自愈: 镜像已更新, 检测设备值与基线语义分歧且超时未收敛则自动重发基线 */
+            monDriftResend($repUuid, $cv);
         }
     }
     /* 状态由客户在网页设置, report 仅回传, upsert 不覆盖 */
@@ -2781,6 +2788,43 @@ function monEnsureStamp($content) {
     return json_encode($arr, JSON_UNESCAPED_UNICODE);
 }
 
+/* 配置漂移自愈 (26-10-18): uploadCfg=0 时设备镜像与基线语义不同 (monVarsDiff 过滤"上次修改"
+ * 仍不一致) 且距上次自动重发超过 MON_DRIFT_RESEND_SEC — 在途下发的正常应用窗口仅 30-60s
+ * (心跳 30s + 应用), 超时未收敛说明设备本地数组被回滚/脚本改写而 applied 锚点仍匹配基线
+ * (闭环停发只看 ack 文件, 服务端无感, 设备将一直跑旧值; 此前需人工"空保存"刷新时间戳救火)。
+ * 自动重打基线"上次修改"让设备下轮 vars 重新拉取应用, 限频防拉锯 (设备端脚本每轮重写时
+ * 最多半小时一轮)。仅 config 通道 (edit 计数被脚本运行时重写是常态, 不做漂移判定)。
+ * 返回 true=已触发重发 */
+function monDriftResend($uuid, $devContent) {
+    global $CFG;
+    $dev = strval($devContent);
+    if (trim($dev) === '') return false;
+    $st = dbAcc()->prepare("SELECT config_var, resend_ms FROM monitor_vars WHERE uuid = ?");
+    if (!$st) return false;
+    $st->bind_param('s', $uuid);
+    $st->execute();
+    $row = $st->get_result()->fetch_assoc();
+    $st->close();
+    if (!$row) return false;
+    $base = strval(isset($row['config_var']) ? $row['config_var'] : '');
+    if (trim($base) === '') return false;                      /* 空基线无内容可重发 */
+    if (monVarsDiff($base, $dev) === '') return false;         /* 语义一致 (仅时间戳差异): 非漂移 */
+    $now = nowMs();
+    $last = intval(isset($row['resend_ms']) ? $row['resend_ms'] : 0);
+    if ($last > 0 && $now - $last < $CFG['MON_DRIFT_RESEND_SEC'] * 1000) return false;   /* 限频窗口内 */
+    $restamped = monEnsureStamp($base);                        /* 重打"上次修改"=当前时间 */
+    $stU = dbAcc()->prepare("UPDATE monitor_vars SET config_var = ?, resend_ms = ? WHERE uuid = ?");
+    if (!$stU) return false;
+    $stU->bind_param('sis', $restamped, $now, $uuid);
+    $stU->execute();
+    $stU->close();
+    auditLog('漂移重发', array('device' => maskId($uuid), 'by' => '系统',
+        'devStamp' => monStampOf($dev), 'baseStamp' => monStampOf($base),
+        'diff' => monVarsDiff($base, $dev),
+        'reason' => '设备上报配置与基线语义不同且超时未收敛, 自动刷新基线时间戳触发重新下发'));
+    return true;
+}
+
 function handleMonitorSetVars($body) {
     if (!rateLimit(clientIp(), 30)) respond(array('success' => false, 'message' => '请求过于频繁'));
     $uuid = monVarsAuth($body, true);
@@ -2818,7 +2862,8 @@ function handleMonitorSetVars($body) {
         if (strlen($cfg) > 65536) respond(array('success' => false, 'message' => '内容超过 64KB 限制'), 400);
         $cfg = monEnsureStamp($cfg);   /* 数组无"上次修改"则兜底补, 防闭环死锁 */
         if (strlen($cfg) > 65536) respond(array('success' => false, 'message' => '内容超过 64KB 限制'), 400);
-        $st = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE config_var = VALUES(config_var), updated_ms = VALUES(updated_ms)");
+        /* 人工保存视为人工介入: 清零 resend_ms, 让后续漂移自愈从新保存时刻重新计时 */
+        $st = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE config_var = VALUES(config_var), updated_ms = VALUES(updated_ms), resend_ms = 0");
         if (!$st) respond(array('success' => false, 'message' => '保存失败'), 500);
         $st->bind_param('ssssssssi', $uuid, $empty, $empty, $empty, $empty, $cfg, $empty, $empty, $now);
         $st->execute();
