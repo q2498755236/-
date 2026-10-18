@@ -1256,8 +1256,12 @@ function renderVarsModal() {
     VARS_FORMS = {};
     var hasDev = String(VARS_DEV).trim() !== '';
     var hasCfg = String(VARS_CFG_DEV).trim() !== '';
-    var pendingE = hasDev && !VARS_EDIT_STOPPED && String(VARS_EDIT).trim() !== '' && !varsCoreEq(VARS_EDIT, VARS_DEV);
-    var pendingC = hasCfg && !VARS_CFG_STOPPED && String(VARS_CFG).trim() !== '' && !varsCoreEq(VARS_CFG, VARS_CFG_DEV);
+    /* 在途判定: 内容不同 (varsCoreEq 过滤"上次修改") 或 时间戳不同 (重复保存仅刷新时间戳,
+     * 内容相同也会让弹窗外旧时间戳与编辑底稿新时间戳不一致, 同样提示在途防困惑) */
+    var pendingE = hasDev && !VARS_EDIT_STOPPED && String(VARS_EDIT).trim() !== ''
+        && (!varsCoreEq(VARS_EDIT, VARS_DEV) || varsStampOf(VARS_EDIT) !== varsStampOf(VARS_DEV));
+    var pendingC = hasCfg && !VARS_CFG_STOPPED && String(VARS_CFG).trim() !== ''
+        && (!varsCoreEq(VARS_CFG, VARS_CFG_DEV) || varsStampOf(VARS_CFG) !== varsStampOf(VARS_CFG_DEV));
     var content = document.getElementById('modalContent');
     content.innerHTML = '<h3><i data-lucide="braces"></i>设备变量<span class="vars-uuid">' + esc(VARS_UUID) + '</span></h3>'
         + '<div class="vars-group"><div class="vars-title">查看变量 <span class="vars-sub">设备上报 · 只读</span></div>'
