@@ -2751,6 +2751,27 @@ function handleMonitorVars($body) {
             @file_put_contents($ackFile, json_encode($curAck), LOCK_EX);
         }
     }
+    if ($editOut !== '' || $cfgOut !== '') {
+        /* 下发内容审计 (26-10-18): 服务端本次响应实际携带下发 (edit/config 非空) 时记录,
+         * 与"变量修改/配置变量修改/漂移重发"(触发来源) 和"下发确认"(设备应用) 串成完整链路,
+         * 无对应操作来源的"下发内容"即异常下发。去噪同 ack 机制: 同一内容每 30s 心跳重复
+         * 下发只记首次, 新保存/漂移重发产生新时间戳 → 锚点变化 → 记新条目;
+         * 锚点存 时间戳:SHA256 派生值而非原文, 防锚点文件随 64KB 内容膨胀 */
+        $sentFile = $LOG_DIR . '/sent_' . md5($uuid) . '.json';
+        $lastSent = json_decode(strval(@file_get_contents($sentFile)), true);
+        $curSent = array(
+            'edit' => $editOut === '' ? '' : monStampOf($editOut) . ':' . hash('sha256', $editOut),
+            'cfg'  => $cfgOut === '' ? '' : monStampOf($cfgOut) . ':' . hash('sha256', $cfgOut),
+        );
+        if ($lastSent !== $curSent) {
+            auditLog('下发内容', array('device' => maskId($uuid), 'by' => '系统',
+                'editLen' => strlen($editOut), 'cfgLen' => strlen($cfgOut),
+                'editStamp' => monStampOf($editOut), 'cfgStamp' => monStampOf($cfgOut),
+                'editContent' => $editOut === '' ? '' : utf8Truncate($editOut, 2000),
+                'cfgContent' => $cfgOut === '' ? '' : utf8Truncate($cfgOut, 2000)));
+            @file_put_contents($sentFile, json_encode($curSent), LOCK_EX);
+        }
+    }
     respond(array(
         'success' => true,
         'uuid' => $uuid,
