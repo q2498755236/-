@@ -244,3 +244,14 @@ Entries discovered by the Agent during task execution should follow this format:
   - 打破停发重发基线: 管理员 key 调 setvars 原样回传 config_var (monEnsureStamp 刷新"上次修改") → 设备 ack 不匹配自动重拉应用; 7F4A 实测 30s 内应用+镜像追平+下发确认闭环
   - 停发判定只看设备 applied 文件 ack, 设备本地数组被回滚服务端无感 (ack 不回传数组内容)——镜像≠基线且 applied==基线=闭环盲区; 已落地服务端自愈 (26-10-18, monDriftResend): report 上报 configVarDev 时比对镜像与基线语义 diff (monVarsDiff 过滤"上次修改"), 超过 MON_DRIFT_RESEND_SEC=1800s 未收敛则 monEnsureStamp 重打基线时间戳自动重发, monitor_vars.resend_ms 限频防拉锯 (人工 setvars 保存清零重新计时), 审计类型"漂移重发"(by=系统, 含 devStamp/baseStamp/diff)
   - 审计链判别下发来源 (26-10-18): 变量修改/配置变量修改(触发来源) → 下发内容(vars 实际下发, sent_ 锚点存 时间戳:SHA256 派生值去噪, 含全文快照) → 下发确认(设备应用) → 漂移重发(异常自愈); 出现"下发内容"而无近期触发来源审计 = 异常下发, 逐条可溯源
+
+[Project Knowledge Summary]
+- Date: 2026-10-18
+- Context: 本地集成冒烟测试 (漂移自愈+下发内容审计 27 项断言全过)
+- Category: Environment Configuration | Testing Methods
+- Instructions:
+  - 本地测试服务器端口: 3010=设备管理系统 当前代码 (php -S 127.0.0.1:3010 router.php); 3000=byethost-deploy 旧目录; 另有 3011 为历史遗留进程, 连错端口会误判"密钥错误"
+  - state 共享陷阱: 设备管理系统 与 byethost-deploy 的 dirname 都是 /workspace, 共用 /workspace/carddata/state——3000 上密钥连错 3 次会封禁 127.0.0.1, 3010 同被封; 测试前清 admin_fail.json/rate.json (写 '{}')
+  - 回归测试: 设备管理系统/mon_smoke_test.php, 服务器起后直接 `php mon_smoke_test.php`, TOTP+HMAC 签名已内置
+  - 测试设备 UUID 必须纯 hex+连字符: 服务端 preg_replace('/[^0-9A-Fa-f\-]/') 清洗, 含 T/S 等字母的 "TEST-xxx" 会被截断成查不到的 uuid
+  - monEnsureStamp 时间戳秒级精度, 断言时间戳变化需 sleep(1) 隔开
