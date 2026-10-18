@@ -196,12 +196,18 @@ Entries discovered by the Agent during task execution should follow this format:
 - Instructions:
   - monitor.js 插件开发禁止 Java 互操作 (Packages/SystemClock/StatFs/android.os.* 一律不要), 需要系统能力时优先纯 JS API (auto.*), 无 API 时用 auto.shell 命令替代 (getprop/cat /proc/uptime/df/dumpsys)
 [Project Knowledge Summary]
-- Date: 2026-10-16
+- Date: 2026-10-16 (更新 2026-10-18)
 - Context: Discovered by Agent while maa (Maa_mjs_ace-v1.1.28) 接入设备管理系统
 - Category: Build Methods
 - Instructions:
   - maa APK 结构：Compose 壳 + MaaFramework v5.13 原生库，dex 无业务 HTTP；assets/pi.zip=MAA 项目包（interface.json+agent/main.py+resource），assets/agent/bundle.zip=Chaquopy Python3.13 运行时（maafw 5.13.0/numpy/strenum）；agent-runtime.json 以 python3 -u agent/main.py 启动，AgentServer socket 与 MaaFW 通信
-  - 更新 agent 逻辑=重打 pi.zip 替换 APK assets 后 zipalign -f -p 4 + apksigner 重签；打 pi.zip 必须带显式目录条目（Info-ZIP zip -r 打包），python zipfile os.walk 只写文件条目会导致壳解压后报「读取 interface.json 失败」
+  - 工作区 maa/ 目录是用户抽掉大文件的残缺版：assets 6 文件（pi.zip/shizuku.apk/PublicSuffixDatabase.list/agent.fingerprint/agent/agent-runtime.json/agent/bundle.zip）+ classes.dex/classes21.dex 在 APK zip 外，需 zip 塞回组装完整包（完整 1164 条目）
+  - manifest 字符串池是 UTF-16LE 编码：用 b'android.permission.INTERNET' ASCII 搜索会误判"无权限"（INTERNET/REQUEST_INSTALL_PACKAGES 等权限一直在），必须用 .encode('utf-16-le') needle 搜索
+  - 更新 pi.zip 推荐流程（zip 级替换，字节级保留其他条目）：cp full.apk new.apk → zip -d new.apk assets/pi.zip → zip -X new.apk assets/pi.zip（stage 目录带路径）→ uber-apk-signer --allowResign 签名（自动 zipalign+v1/v2/v3）；apktool b 重编资源会丢 META-INF/*.version 与 res 重命名，留作备选
+  - 打 pi.zip 必须带显式目录条目（Info-ZIP zip -r 打包，排除 __pycache__），python zipfile os.walk 只写文件条目会导致壳解压后报「读取 interface.json 失败」
   - monitor 协议（maa 端 monitor_client.py）：/api/monitor/report 心跳+三变量通道（viewVar/editVarDev/configVarDev），/api/monitor/vars 拉取+editAck/configAck 闭环（数组取「上次修改」时间戳、非数组取内容 SHA256）；签名=TOTP（Base32 seed 经 monitor.js _unmask XOR 混淆还原）+HMAC-SHA256("deviceId=..&uuid=..&nonce=..&timestamp=..&totp=..", totp+seed)+nonce 防重放
+  - Chaquopy 的 Python ssl 默认 CA 路径在 Android 上为空，HTTPS 直连会 CERTIFICATE_VERIFY_FAILED：monitor_client._ssl_context() 三级兜底（/system/etc/security/cacerts 拼接 cadata → Python 默认 context → 跳过校验标注降级）
+  - 连接失败可见化：viewVar 带「连接状态」（正常=证书模式+RT，失败=最近原因，分类描述无网络权限/SSL/DNS/超时）；失败详情落盘 agent/mon_debug.log
   - ByetHost 前置 JS challenge 拦普通 UA，所有客户端统一 UA "Googlebot/2.1 (+http://www.google.com/bot.html)"；md5 样式 UA 会被拦
-  - 挂机时段 run_range（configVar 下发）：「当前时间在时段内」判定 false（未配置/格式无效/时段外）→ 动作入口 post_stop 暂停全部动作只跑心跳，进入时段后下轮任务自动恢复；格式同 monitor.js timeRangeParse（18:00-08:00 跨天/18-8 简写/全角转换/起终相同恒外）
+  - 挂机时段 run_range（configVar 下发）：「当前时间在时段内」判定 false（未配置/格式无效/时段外）→ 动作入口暂停全部动作只跑心跳，进入时段后下轮任务自动恢复；格式同 monitor.js timeRangeParse（18:00-08:00 跨天/18-8 简写/全角转换/起终相同恒外）
+  - maa 签名密钥 maa-monitor/maa-mon.jks（alias maamon，口令 maamon123，有效期 2056），换签名需卸载重装（顺便清应用数据绕 pi.version 缓存）

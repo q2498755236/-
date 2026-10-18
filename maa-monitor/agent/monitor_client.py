@@ -19,6 +19,7 @@ import hashlib
 import hmac
 import json
 import os
+import ssl
 import struct
 import threading
 import time
@@ -43,7 +44,7 @@ DEFAULTS = {
     # TOTP seed 混淆存储 (XOR + Hex, 与 monitor.js MON_TOTP_MASKED/MON_TOTP_KEY 同源同值)
     "totp_masked": "1838623e023c7819085d7427012d740078387840662363097e32753d024f6f1c",
     "totp_key": "Mk7wQz9X",
-    "ver": "maa-agent-1.0.0",
+    "ver": "maa-agent-1.0.1",
 }
 
 
@@ -184,6 +185,85 @@ def _save_state(patch: dict) -> None:
 _NET_LOCK = threading.Lock()
 _LAST_RT_MS = 0
 
+_SSL_CTX = None
+_SSL_MODE = ""
+_SSL_LOCK = threading.Lock()
+
+_LAST_ERROR = ""  # 最近一次连接失败原因 (上报「连接状态」查看变量)
+
+
+def _note_error(msg: object) -> None:
+    """记录最近连接失败原因: 内存 + 落盘 mon_debug.log (排查用, 截断防爆)。"""
+    global _LAST_ERROR
+    text = str(msg).replace("\n", " ")[:160]
+    with _NET_LOCK:
+        _LAST_ERROR = text
+    try:
+        with open(os.path.join(AGENT_DIR, "mon_debug.log"), "a", encoding="utf-8") as handle:
+            handle.write(f"[{datetime.now().strftime('%m-%d %H:%M:%S')}] {text}\n")
+    except OSError:
+        pass
+
+
+def _ssl_context():
+    """HTTPS 证书校验三级兜底 (Chaquopy 默认 CA 路径在 Android 上通常为空):
+
+    1) /system/etc/security/cacerts 拼接 cadata 校验 (安卓标准 CA 目录)
+    2) Python 默认 context (桌面 Linux 调试环境)
+    3) 都没有则跳过校验 (降级, _SSL_MODE 标注)
+    """
+    global _SSL_CTX, _SSL_MODE
+    with _SSL_LOCK:
+        if _SSL_CTX is not None:
+            return _SSL_CTX
+        try:
+            cacerts_dir = "/system/etc/security/cacerts"
+            names = os.listdir(cacerts_dir) if os.path.isdir(cacerts_dir) else []
+            parts = []
+            for name in names:
+                try:
+                    with open(os.path.join(cacerts_dir, name), "r", encoding="utf-8", errors="ignore") as handle:
+                        parts.append(handle.read())
+                except OSError:
+                    continue
+            if parts:
+                context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                context.load_verify_locations(cadata="\n".join(parts))
+                _SSL_CTX, _SSL_MODE = context, "系统证书校验"
+                return _SSL_CTX
+        except Exception as exc:
+            _note_error(f"ssl cacerts 兜底失败: {exc}")
+        try:
+            context = ssl.create_default_context()
+            if context.get_ca_certs():
+                _SSL_CTX, _SSL_MODE = context, "默认证书校验"
+                return _SSL_CTX
+        except Exception:
+            pass
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        _SSL_CTX, _SSL_MODE = context, "跳过证书校验"
+        return _SSL_CTX
+
+
+def _describe_exc(exc: Exception) -> str:
+    """异常转简短中文原因 (Permission denied/SSL/DNS/超时等)。"""
+    text = str(exc) or exc.__class__.__name__
+    if isinstance(exc, urllib.error.URLError) and exc.reason is not None:
+        text = str(exc.reason)
+    if "Permission denied" in text:
+        return f"无网络权限(Permission denied): {text}"[:160]
+    if "CERTIFICATE" in text.upper() or "SSL" in text.upper():
+        return f"SSL 证书错误: {text}"[:160]
+    if "timed out" in text or "timeout" in text.lower():
+        return f"请求超时: {text}"[:160]
+    if "Name or service" in text or "Temporary failure" in text:
+        return f"DNS 解析失败: {text}"[:160]
+    if "Network is unreachable" in text or "ECONNREFUSED" in text.upper():
+        return f"网络不可达: {text}"[:160]
+    return f"{exc.__class__.__name__}: {text}"[:160]
+
 
 def _signed_body() -> dict:
     now_sec = int(time.time())
@@ -206,7 +286,7 @@ def _signed_body() -> dict:
 
 
 def _post_json(path: str, payload: dict) -> dict:
-    """POST JSON, 返回服务端 dict; 任何异常返回 {} (静默降级)。"""
+    """POST JSON, 返回服务端 dict; 任何异常返回 {} (静默降级 + 记录原因)。"""
     url = str(CFG["server"]).rstrip("/") + path
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
@@ -219,11 +299,20 @@ def _post_json(path: str, payload: dict) -> dict:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=15) as resp:
+        with urllib.request.urlopen(request, timeout=15, context=_ssl_context()) as resp:
             body = resp.read().decode("utf-8", errors="replace")
         parsed = json.loads(body)
-        return parsed if isinstance(parsed, dict) else {}
-    except (urllib.error.URLError, OSError, ValueError):
+        if isinstance(parsed, dict):
+            if not parsed.get("success"):
+                _note_error(f"{path} 返回失败: {parsed}")
+            else:
+                with _NET_LOCK:
+                    globals()["_LAST_ERROR"] = ""
+            return parsed
+        _note_error(f"{path} 响应非 JSON: {body[:80]}")
+        return {}
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        _note_error(f"{path} {_describe_exc(exc)}")
         return {}
 
 
@@ -474,6 +563,13 @@ def _heartbeat_once() -> None:
     view_items.append({"name": "版本", "count": str(CFG.get("ver", ""))})
     view_items.append({"name": "运行秒", "count": uptime})
     view_items.append({"name": "上次心跳", "count": datetime.now().strftime("%H:%M:%S")})
+    # 连接状态: 正常=证书模式; 异常=最近失败原因 (无网络权限/SSL/DNS/超时)
+    with _NET_LOCK:
+        last_err = _LAST_ERROR
+        rt_ms = _LAST_RT_MS
+    view_items.append(
+        {"name": "连接状态", "count": last_err if last_err else f"正常({_SSL_MODE},{rt_ms}ms)"}
+    )
     # 挂机时段状态: run_range 下发值 + 当前判定 (false=时段外, 动作已暂停)
     range_raw = str(override_params({}).get("run_range", "") or "")
     view_items.append({"name": "挂机时段", "count": range_raw})
