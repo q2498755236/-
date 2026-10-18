@@ -1343,13 +1343,22 @@ function editVarsForm(kind) {
     }
     var parsed = null;
     try { var p = JSON.parse(init); if (Array.isArray(p)) parsed = p; } catch (e) {}
-    VARS_FORMS[kind] = { arr: parsed };
+    /* 防错误下发 (26-10-18): 停发中底稿取设备内容, 但设备数组可能被本地回滚/脚本重写成旧值
+     * (如 7F4A 定时时间 00:10 残留) — 设备内容与网页基线语义不同时标记, 保存前强制确认,
+     * 防止用户改其他字段时把设备旧值整包固化入基线误下发 */
+    var devDiverged = (stopped === true)
+        && String(k.dev).trim() !== '' && String(k.pend).trim() !== ''
+        && !varsCoreEq(k.dev, k.pend);
+    VARS_FORMS[kind] = { arr: parsed, devDiverged: devDiverged };
     var area = document.getElementById(k.area);
+    var warnHtml = devDiverged
+        ? '<div class="vars-sub" style="color:#c0392b;margin-bottom:6px">&#9888; 设备上报内容与网页上次保存的基线不同 (设备可能本地回滚或被脚本改写)。编辑底稿取的是设备当前值, 保存将覆盖网页基线并下发, 请核对后再保存。</div>'
+        : '';
     var footer = '<div class="modal-footer"><button class="ghost" onclick="renderVarsModal()">取消</button>'
         + '<button onclick="saveVars(\'' + kind + '\')">保存</button></div>';
     if (parsed === null) {
         /* 非数组 JSON: 保持原文编辑 */
-        area.innerHTML = '<textarea class="vars-textarea" spellcheck="false">' + esc(init) + '</textarea>' + footer;
+        area.innerHTML = warnHtml + '<textarea class="vars-textarea" spellcheck="false">' + esc(init) + '</textarea>' + footer;
     } else {
         /* 数组: 与查看变量同行样式, name 只读, 仅 count 值可改; "上次修改"行只读;
          * 每个可编辑项下加两个备用槽 (backup1/backup2), 仅存服务端草稿, 不下发设备 */
@@ -1439,9 +1448,9 @@ function saveVars(kind) {
         }
         stampApply(form.arr);
         text = JSON.stringify(form.arr);
-    } else {
-        var ta = document.querySelector('#' + k.area + ' .vars-textarea');
-        text = String(ta ? ta.value : '');
+        } else {
+            var ta = document.querySelector('#' + k.area + ' .vars-textarea');
+            text = String(ta ? ta.value : '');
         if (text.trim() !== '') {
             var parsed = null, isJson = true;
             try { parsed = JSON.parse(text); } catch (e) { isJson = false; }
@@ -1461,6 +1470,8 @@ function saveVars(kind) {
             }
         }
     }
+    /* 防错误下发: 设备内容与基线语义不同时, 保存=用设备旧值覆盖网页配置, 强制显式确认 */
+    if (form.devDiverged && !window.confirm('设备上报内容与网页上次保存的基线不同, 保存将以设备当前值为准覆盖网页配置并下发。\n若设备本地数据可能过期/被改写, 请先取消并核对内容。确认下发?')) return;
     var payload = { uuid: VARS_UUID };
     payload[k.field] = text;
     /* 备用槽收集 (仅表单模式有 .vr-slot 元素): 深拷贝数组写 backup1/backup2 (空值删字段);
