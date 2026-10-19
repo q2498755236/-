@@ -184,6 +184,28 @@ $r = post('/api/monitor/report', array_merge(devAuth($DEV, $UUID), array(
 $lines = auditLines($base);
 check('T7 重新计时后再触发 (共 2 条)', countType($lines, '漂移重发') === 2);
 
+/* ---- T8: 存量死锁自愈——基线数组缺"上次修改" → 下发时自动补并回写 ---- */
+$noStamp = json_encode(array(array('name' => '定时时间', 'count' => '00:30')), JSON_UNESCAPED_UNICODE);
+$tdb = db();
+$st8 = $tdb->prepare("UPDATE monitor_vars SET config_var = ?, resend_ms = 0 WHERE uuid = ?");
+$st8->bind_param('ss', $noStamp, $UUID);
+$st8->execute();
+$st8->close();
+$tdb->close();
+$r = post('/api/monitor/vars', devAuth($DEV, $UUID));
+$cfgOut8 = strval($r['config']);
+check('T8 下发内容已补时间戳', strpos($cfgOut8, '上次修改') !== false);
+$row = dbRow("SELECT config_var FROM monitor_vars WHERE uuid = '$UUID'");
+$arr8 = json_decode(strval($row['config_var']), true);
+$stamp8 = '';
+foreach ((array)$arr8 as $it) if (strval($it['name']) === '上次修改') $stamp8 = strval($it['count']);
+check('T8 补后基线回写落库', $stamp8 !== '');
+$lines = auditLines($base);
+check('T8 审计含 基线补时间戳', countType($lines, '基线补时间戳') >= 1);
+/* ack 补后的时间戳 → 应停发, 闭环恢复 */
+$r = post('/api/monitor/vars', array_merge(devAuth($DEV, $UUID), array('configAck' => $stamp8)));
+check('T8 补后闭环停发 (configStopped)', !empty($r['configStopped']));
+
 /* ---- 汇总: 打印新审计行 ---- */
 echo "\n---- 新增审计行 ----\n";
 foreach (auditLines($base) as $l) echo $l . "\n";

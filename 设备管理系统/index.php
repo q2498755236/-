@@ -1352,9 +1352,13 @@ function handleMonitorReport($body) {
                     $editCover = monUploadAllowCover($dv, strval(isset($oldRowE['edit_var']) ? $oldRowE['edit_var'] : ''));
                 }
                 if ($editCover) {
+                /* 上发覆盖也必须补"上次修改" (26-10-19): 设备数组被业务脚本重写会冲掉该条目,
+                 * 原样覆盖进基线 => 设备端 stampKey 为空 => 永不写 applied 锚点 => 闭环死锁 (7F4A/92B4);
+                 * 镜像列仍存设备原文, 仅基线副本补 */
+                $dvBase = monEnsureStamp($dv);
                 $stV = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE view_var = VALUES(view_var), edit_var_dev = VALUES(edit_var_dev), edit_var = VALUES(edit_var), updated_ms = VALUES(updated_ms)");
                 if ($stV) {
-                    $stV->bind_param('ssssssssi', $repUuid, $vv, $dv, $dv, $cvd, $empty, $empty, $empty, $nowV);
+                    $stV->bind_param('ssssssssi', $repUuid, $vv, $dv, $dvBase, $cvd, $empty, $empty, $empty, $nowV);
                     $stV->execute();
                     $stV->close();
                     /* 上发生效审计: 设备内容已反向覆盖下发基线; 摘要一行可读, 完整 JSON 快照限长 2000 供网页展开查看 */
@@ -1409,9 +1413,11 @@ function handleMonitorReport($body) {
                 $cfgCover = monUploadAllowCover($cv, strval(isset($oldRowC['config_var']) ? $oldRowC['config_var'] : ''));
             }
             if ($cfgCover) {
+            /* 同 edit 通道: 基线副本补"上次修改", 镜像列存设备原文, 防无时间戳闭环死锁 (26-10-19) */
+            $cvBase = monEnsureStamp($cv);
             $stC = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE config_var_dev = VALUES(config_var_dev), config_var = VALUES(config_var), updated_ms = VALUES(updated_ms)");
             if ($stC) {
-                $stC->bind_param('ssssssssi', $repUuid, $emptyC, $emptyC, $emptyC, $cv, $cv, $emptyC, $emptyC, $nowC);
+                $stC->bind_param('ssssssssi', $repUuid, $emptyC, $emptyC, $emptyC, $cv, $cvBase, $emptyC, $emptyC, $nowC);
                 $stC->execute();
                 $stC->close();
             }
@@ -2728,6 +2734,31 @@ function handleMonitorVars($body) {
     $cfgAck = strval(isset($body['configAck']) ? $body['configAck'] : '');
     $editOut = strval($row ? $row['edit_var'] : '');
     $cfgOut = strval($row ? $row['config_var'] : '');
+    /* 存量基线自愈 (26-10-19): 数组内容缺"上次修改" => 设备端 stampKey 为空 => 永不写 applied 锚点
+     * => 本组永远无法停发 (历史 uploadCfg 覆盖写入未补时间戳造成, 见 report 覆盖分支);
+     * 下发前现场补并回写库, 一次修复后闭环恢复正常 */
+    $fixArr = function ($content) {
+        $s = strval($content);
+        if (trim($s) === '' || monStampOf($s) !== '') return $s;   /* 空/非数组/已有时间戳: 不动 */
+        $arr = json_decode($s, true);
+        if (!is_array($arr)) return $s;                            /* 非数组走内容哈希闭环, 不需要 */
+        return monEnsureStamp($s);
+    };
+    $eFix = $fixArr($editOut);
+    $cFix = $fixArr($cfgOut);
+    if ($eFix !== $editOut || $cFix !== $cfgOut) {
+        $stFix = dbAcc()->prepare("UPDATE monitor_vars SET edit_var = ?, config_var = ? WHERE uuid = ?");
+        if ($stFix) {
+            $stFix->bind_param('sss', $eFix, $cFix, $uuid);
+            $stFix->execute();
+            $stFix->close();
+        }
+        auditLog('基线补时间戳', array('device' => maskId($uuid), 'by' => '系统',
+            'edit' => $eFix !== $editOut ? 1 : 0, 'config' => $cFix !== $cfgOut ? 1 : 0,
+            'reason' => '数组基线缺"上次修改"条目, 设备端无法回传 ack 导致永久重发, 已补时间戳恢复闭环'));
+        $editOut = $eFix;
+        $cfgOut = $cFix;
+    }
     $editStopped = false;
     $cfgStopped = false;
     if ($editOut !== '' && $editAck !== '' &&
