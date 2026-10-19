@@ -206,6 +206,20 @@ check('T8 审计含 基线补时间戳', countType($lines, '基线补时间戳')
 $r = post('/api/monitor/vars', array_merge(devAuth($DEV, $UUID), array('configAck' => $stamp8)));
 check('T8 补后闭环停发 (configStopped)', !empty($r['configStopped']));
 
+/* ---- T9: 镜像兜底——设备镜像==基线但回传 ack 缺失 => 判定已应用停发 ---- */
+$tdb = db();
+$st9 = $tdb->prepare("UPDATE monitor_vars SET config_var_dev = config_var, resend_ms = 0 WHERE uuid = ?");
+$st9->bind_param('s', $UUID);
+$st9->execute();
+$st9->close();
+$tdb->close();
+$r = post('/api/monitor/vars', devAuth($DEV, $UUID));   /* 不带任何 ack */
+check('T9 镜像==基线时停发', !empty($r['configStopped']) && strval($r['config']) === '');
+$lines = auditLines($base);
+$mirrorAudit = 0;
+foreach ($lines as $l) if (strpos($l, '下发确认') !== false && strpos($l, '镜像已与基线一致') !== false) $mirrorAudit++;
+check('T9 审计标注系统镜像兜底', $mirrorAudit >= 1);
+
 /* ---- 汇总: 打印新审计行 ---- */
 echo "\n---- 新增审计行 ----\n";
 foreach (auditLines($base) as $l) echo $l . "\n";

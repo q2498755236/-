@@ -2761,6 +2761,8 @@ function handleMonitorVars($body) {
     }
     $editStopped = false;
     $cfgStopped = false;
+    $editMirrorStopped = false;
+    $cfgMirrorStopped = false;
     if ($editOut !== '' && $editAck !== '' &&
         (monStampOf($editOut) === $editAck || hash('sha256', $editOut) === $editAck)) {
         $editOut = '';
@@ -2771,6 +2773,19 @@ function handleMonitorVars($body) {
         $cfgOut = '';
         $cfgStopped = true;
     }
+    /* 镜像兜底 (26-10-19): ack 不匹配但设备上报镜像已与基线内容完全一致 => 设备实际已拥有该内容,
+     * 视为已应用停发。兜底设备端 applied 锚点丢失/写不进 (7F4A) 或本地回滚后锚点仍命中原内容
+     * 导致"永远跳过、服务端永远重发"的死循环 (92B4 类); 严格字面相等才停, 不做语义近似 */
+    if ($editOut !== '' && !$editStopped && strval(isset($row['edit_var_dev']) ? $row['edit_var_dev'] : '') === $editOut) {
+        $editOut = '';
+        $editStopped = true;
+        $editMirrorStopped = true;
+    }
+    if ($cfgOut !== '' && !$cfgStopped && strval(isset($row['config_var_dev']) ? $row['config_var_dev'] : '') === $cfgOut) {
+        $cfgOut = '';
+        $cfgStopped = true;
+        $cfgMirrorStopped = true;
+    }
     if ($editStopped || $cfgStopped) {
         /* 去噪: 心跳每轮都会例行确认已应用内容, 同一 ack 锚点只记首次审计,
          * 设备应用了新下发 (ack 变化) 才记新条目, 避免每 2 分钟刷一条重复确认 */
@@ -2778,7 +2793,13 @@ function handleMonitorVars($body) {
         $lastAck = json_decode(strval(@file_get_contents($ackFile)), true);
         $curAck = array('edit' => $editAck, 'cfg' => $cfgAck);
         if ($lastAck !== $curAck) {
-            auditLog('下发确认', array('device' => maskId($uuid), 'by' => '设备', 'edit' => $editStopped ? 1 : 0, 'config' => $cfgStopped ? 1 : 0));
+            if ($editMirrorStopped || $cfgMirrorStopped) {
+                auditLog('下发确认', array('device' => maskId($uuid), 'by' => '系统', 'edit' => $editMirrorStopped ? 1 : 0,
+                    'config' => $cfgMirrorStopped ? 1 : 0,
+                    'reason' => '设备回传 ack 缺失/未更新, 但上报镜像已与基线一致, 判定已应用停发'));
+            } else {
+                auditLog('下发确认', array('device' => maskId($uuid), 'by' => '设备', 'edit' => $editStopped ? 1 : 0, 'config' => $cfgStopped ? 1 : 0));
+            }
             @file_put_contents($ackFile, json_encode($curAck), LOCK_EX);
         }
     }
