@@ -245,6 +245,8 @@ Entries discovered by the Agent during task execution should follow this format:
   - 停发判定只看设备 applied 文件 ack, 设备本地数组被回滚服务端无感 (ack 不回传数组内容)——镜像≠基线且 applied==基线=闭环盲区; 已落地服务端自愈 (26-10-18, monDriftResend): report 上报 configVarDev 时比对镜像与基线语义 diff (monVarsDiff 过滤"上次修改"), 超过 MON_DRIFT_RESEND_SEC=1800s 未收敛则 monEnsureStamp 重打基线时间戳自动重发, monitor_vars.resend_ms 限频防拉锯 (人工 setvars 保存清零重新计时), 审计类型"漂移重发"(by=系统, 含 devStamp/baseStamp/diff)
   - 审计链判别下发来源 (26-10-18): 变量修改/配置变量修改(触发来源) → 下发内容(vars 实际下发, sent_ 锚点存 时间戳:SHA256 派生值去噪, 含全文快照) → 下发确认(设备应用) → 漂移重发(异常自愈); 出现"下发内容"而无近期触发来源审计 = 异常下发, 逐条可溯源
   - **数组基线缺"上次修改"=下发闭环永久死锁 (26-10-19 定位, 7F4A/92B4 最新不落盘)**: 设备端 arrApplyServerEdit 仅在 stampKey 非空时写 applied 锚点, 基线数组缺该条目 => ack 永远空 => 服务端永远重发, 编辑页最新值一直"在途"; 入口是 uploadCfg=1 上发覆盖直接把设备原始数组写进基线 (业务脚本重写数组会冲掉该条目); 修复 aa7537b: 覆盖写入时基线副本 monEnsureStamp + vars 下发前兜底补并回写 (审计'基线补时间戳'), 存量死锁一次自愈
+  - **镜像兜底 (26-10-19, fb4e821)**: ack 不匹配但设备上报镜像与基线严格字面相等 => 判定已应用停发 (审计'下发确认' by=系统 + reason 标注); 治设备端 applied 锚点丢失/写不进 (7F4A) 或回滚后锚点仍命中原内容 "永远跳过、服务端永远重发" (92B4 类); 线上验证 config 通道两台均停发; edit 通道若仍有真实字段差异 (赠礼计数设备比基线小) 属正常在途, 需设备端日志确认应用情况
+  - 设备端排查线: 编辑器日志 grep "变量同步:"/"已应用服务端下发变量"/"下发跳过 (已应用过)"/"下发应用写入失败"; 出现"下发跳过"而服务端仍重发 = 锚点1 命中但本地变量已被改写, 需设备端修复锚点1 的内容校验
 
 [Project Knowledge Summary]
 - Date: 2026-10-18
