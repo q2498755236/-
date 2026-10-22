@@ -285,3 +285,15 @@ Entries discovered by the Agent during task execution should follow this format:
   - 设备端 arrApplyServerEdit 双锚点现已要求"章相同 且 arrSemanticEq(本地,下发)"才跳过, 本地被业务脚本改写/损坏时重新应用基线 (f767abe); 设备端生效需重新加载 monitor.js 插件
   - 设备端 JS 决策流测试: 设备管理系统/monitor_apply_test.js, `node monitor_apply_test.js` (mock auto/monRead/monWrite 内存环境, 从 monitor.js 源码切函数 eval, 8 场景 9 断言); 改 arrApplyServerEdit/arrSemanticEq 后必跑
   - JS 语义比较用 for-in (Rhino 兼容), 代码库既有风格也是 for-in
+
+[Project Knowledge Summary]
+- Date: 2026-10-22
+- Context: 三台设备缩略图 22 小时不更新 — 定位为 byethost WAF 拦截 multipart
+- Category: Troubleshooting & Debugging | Environment Configuration
+- Instructions:
+  - **根因**: byethost 的 openresty WAF 拦截 multipart 文件上传, http.upload 一律返回 403 (HTML, 非 PHP); JSON POST 放行。设备心跳/vars 走 postJson 全部正常, 只有缩略图坏 => 三台在同一分钟停更 = 服务端统一因素, 不是截图/前台/设备问题
+  - 端到端取证方法: 拉线上 config.php 取 MONITOR_TOTP_SEED (全局单 seed, 所有设备共用), 用 Python 算 TOTP(30s/B32)+HMAC-SHA256 构造真实签名请求; multipart 403 vs base64 JSON 200 对比即定因
+  - 修复 (c519bbc): 设备端 monThumbUpload 改 shell base64 + http.postJson(img 字段, 服务端原有兜底链路), threads 子线程发送, 版本 1.2.3; 服务端无需改动
+  - 诊断信号对照: report JSON 200 + thumb multipart 403 = WAF; report 和 thumb 都 400/401 = 签名; 都 500 = PHP/存储
+  - 线上 mon_thumbs 文件 mtime 与 list 的 thumb_mtime 一致可判断"最后成功落盘时刻"; screen_state.static_sec 只表示服务端最后比对时刻距今, 不等于最后上传时刻
+  - 设备端 mock 测试: 设备管理系统/monitor_thumb_test.js (9 断言: threads/URL/img 去空白/签名齐备/无 files/结果变量/删临时文件/画面状态/base64 过短放弃)
