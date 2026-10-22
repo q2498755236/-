@@ -1437,12 +1437,41 @@ function cfgResolveName() {
     return '配置变量';
 }
 
+/* 数组语义相等 (与 PHP monVarsDiff 同口径, 26-10-22): 去"上次修改"章后
+ * 按 name=>count 映射比对, 顺序无关、格式无关 (设备侧业务脚本重写为 pretty
+ * JSON 也不影响判定); 任一侧非数组返回 false */
+function arrSemanticEq(a, b) {
+    if (!Array.isArray(a) || !Array.isArray(b)) return false;
+    function mapOf(arr) {
+        var m = {};
+        for (var i = 0; i < arr.length; i++) {
+            var it = arr[i];
+            if (it && typeof it === 'object' && it.name !== undefined && String(it.name) !== '上次修改') {
+                m[String(it.name)] = String(it.count === undefined ? '' : it.count);
+            }
+        }
+        return m;
+    }
+    var ma = mapOf(a);
+    var mb = mapOf(b);
+    var n = 0;
+    for (var k in ma) {
+        if (!(k in mb) || ma[k] !== mb[k]) return false;
+        n++;
+    }
+    for (var k2 in mb) n--;
+    return n === 0;
+}
+
 /* 应用服务端下发: 暂存内容 (monFetchVars 写入) 为数组 JSON 时写入数据源变量。
  * 修改变量与配置变量各组独立暂存 (pendingFile/pendingVar 缺省为修改变量组);
- * 防重复双锚点: 1) applied 文件记录已应用的"上次修改"时间戳 (业务脚本写回变量
- * 会冲掉数组内"上次修改"条目导致重复应用, 文件锚点不受影响);
- * 2) 本地数组内"上次修改"条目比对 (兼容保留, 命中时补录文件锚点);
- * 时间戳一致即跳过并清暂存; 应用成功后把时间戳记入 applied 文件 */
+ * 防重复双锚点 (26-10-22 起均要求语义相等): 1) applied 文件记录已应用的
+ * "上次修改"时间戳 (业务脚本写回变量会冲掉数组内"上次修改"条目导致重复应用,
+ * 文件锚点不受影响); 2) 本地数组内"上次修改"条目比对 (兼容保留, 命中时补录
+ * 文件锚点); 章相同且本地内容与下发内容语义一致 (arrSemanticEq, 去"上次修改"
+ * 后按 name=>count 比对, 顺序/格式无关) 才跳过并清暂存; 本地被业务脚本改写
+ * 偏离基线时重新应用, 避免服务端永久重发/设备永久跳过死循环;
+ * 应用成功后把时间戳记入 applied 文件 */
 function arrApplyServerEdit(varName, pendingFile, pendingVar) {
     var pFile = pendingFile || MON_PENDING_FILE;
     var pVar = pendingVar || 'mon_edit_pending';
@@ -1459,16 +1488,7 @@ function arrApplyServerEdit(varName, pendingFile, pendingVar) {
     if (fresh === null) { monWrite(pFile, pVar, ''); return; }
     var stampNew = arrFind(fresh, 'name', '上次修改');
     var stampKey = stampNew ? String(stampNew.count) : '';
-    /* 锚点1: applied 文件 (优先; 业务脚本覆盖数据源变量也不受影响) */
-    if (stampKey !== '') {
-        var applied = String(monRead(aFile, aVar) || '');
-        if (applied === stampKey) {
-            monWrite(pFile, pVar, '');
-            slog('下发跳过 (已应用过): ' + varName + ' 上次修改=' + stampKey);
-            return;
-        }
-    }
-    /* 锚点2: 本地数组内"上次修改"条目 (兼容保留) */
+    /* 读取本地数据源数组 (双锚点比对共用) */
     var cur = null;
     var raw = auto.getValue(varName);
     if (raw !== undefined && raw !== null && String(raw).trim() !== '') {
@@ -1477,9 +1497,25 @@ function arrApplyServerEdit(varName, pendingFile, pendingVar) {
             if (Array.isArray(parsedCur)) cur = parsedCur;
         } catch (e1) {}
     }
+    /* 锚点1: applied 文件 (优先; 业务脚本覆盖数据源变量也不受影响);
+     * 26-10-22 修复: 章相同但本地数组已被业务脚本改写 (语义不等, 92B4 类) 时
+     * 原逻辑直接跳过 => 服务端镜像≠基线永久重发而设备永远跳过, 死循环;
+     * 现要求章相同且语义相等才跳过, 偏离则落入下方应用流程重新写回基线内容 */
+    if (stampKey !== '') {
+        var applied = String(monRead(aFile, aVar) || '');
+        if (applied === stampKey && cur !== null && arrSemanticEq(cur, fresh)) {
+            monWrite(pFile, pVar, '');
+            slog('下发跳过 (已应用过): ' + varName + ' 上次修改=' + stampKey);
+            return;
+        }
+        if (applied === stampKey) {
+            slog('锚点命中但本地内容已偏离基线, 重新应用: ' + varName + ' 上次修改=' + stampKey);
+        }
+    }
+    /* 锚点2: 本地数组内"上次修改"条目 (兼容保留), 同样要求语义相等 */
     if (cur !== null && stampKey !== '') {
         var stampCur = arrFind(cur, 'name', '上次修改');
-        if (stampCur !== null && String(stampCur.count) === stampKey) {
+        if (stampCur !== null && String(stampCur.count) === stampKey && arrSemanticEq(cur, fresh)) {
             monWrite(aFile, aVar, stampKey);
             monWrite(pFile, pVar, '');
             return;
