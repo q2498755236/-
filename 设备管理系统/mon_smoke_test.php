@@ -220,6 +220,45 @@ $mirrorAudit = 0;
 foreach ($lines as $l) if (strpos($l, '下发确认') !== false && strpos($l, '镜像已与基线一致') !== false) $mirrorAudit++;
 check('T9 审计标注系统镜像兜底', $mirrorAudit >= 1);
 
+/* ---- T10: 镜像兜底语义分支——设备镜像为 pretty 格式且缺"上次修改"章但业务字段与基线一致 => 停发 ---- */
+$tdb = db();
+$st10 = $tdb->prepare("SELECT config_var FROM monitor_vars WHERE uuid = ?");
+$st10->bind_param('s', $UUID);
+$st10->execute();
+$arr10 = json_decode(strval(current($st10->get_result()->fetch_assoc())), true);
+$st10->close();
+$tdb->close();
+$core10 = array();
+foreach ((array)$arr10 as $it) if (strval($it['name']) !== '上次修改') $core10[] = $it;
+$pretty10 = json_encode(array_values($core10), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);   /* 模拟设备端 pretty 重写 + 无章 */
+$tdb = db();
+$st10b = $tdb->prepare("UPDATE monitor_vars SET config_var_dev = ?, resend_ms = 0 WHERE uuid = ?");
+$st10b->bind_param('ss', $pretty10, $UUID);
+$st10b->execute();
+$st10b->close();
+$tdb->close();
+/* 先带陈旧 ack 请求一次: ack 不匹配 => 正常下发并刷新去噪缓存, 之后无 ack 停发时 curAck 变化才会记审计 */
+post('/api/monitor/vars', array_merge(devAuth($DEV, $UUID), array('configAck' => 'stale-anchor')));
+$r = post('/api/monitor/vars', devAuth($DEV, $UUID));
+check('T10 语义一致(pretty+无章)停发', !empty($r['configStopped']) && strval($r['config']) === '');
+$lines = auditLines($base);
+$semAudit = 0;
+foreach ($lines as $l) if (strpos($l, '下发确认') !== false && strpos($l, '语义一致') !== false) $semAudit++;
+check('T10 审计标注语义一致', $semAudit >= 1);
+
+/* ---- T11: 语义不等 (业务字段差异) => 镜像兜底不触发, 继续下发 ---- */
+$core11 = $core10;
+$core11[0]['count'] = strval(intval(strval($core11[0]['count'])) + 7);   /* 改一个业务字段制造语义差异 */
+$diff11 = json_encode(array_values($core11), JSON_UNESCAPED_UNICODE);
+$tdb = db();
+$st11 = $tdb->prepare("UPDATE monitor_vars SET config_var_dev = ?, resend_ms = 0 WHERE uuid = ?");
+$st11->bind_param('ss', $diff11, $UUID);
+$st11->execute();
+$st11->close();
+$tdb->close();
+$r = post('/api/monitor/vars', devAuth($DEV, $UUID));
+check('T11 语义差异仍下发', empty($r['configStopped']) && strval($r['config']) !== '');
+
 /* ---- 汇总: 打印新审计行 ---- */
 echo "\n---- 新增审计行 ----\n";
 foreach (auditLines($base) as $l) echo $l . "\n";

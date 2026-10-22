@@ -2708,6 +2708,18 @@ function monVarsDiff($old, $new, $maxItems = 15) {
     return implode('; ', $parts);
 }
 
+/* 镜像与基线等价判定 (镜像兜底用): 0=不等, 1=字面相等, 2=语义相等;
+ * 语义相等 = 两侧均为数组 JSON 且去"上次修改"章后逐字段一致 (monVarsDiff, 顺序无关);
+ * 设备镜像为业务脚本重写后的 pretty JSON 且常缺时间戳章, 字面比较必然失败, 需语义退化 (26-10-22) */
+function monVarsMirrorEq($dev, $base) {
+    $dev = strval($dev);
+    $base = strval($base);
+    if ($dev === '') return 0;
+    if ($dev === $base) return 1;
+    if (!is_array(json_decode($dev, true)) || !is_array(json_decode($base, true))) return 0;
+    return monVarsDiff($dev, $base) === '' ? 2 : 0;
+}
+
 function handleMonitorVars($body) {
     global $LOG_DIR;   /* ack 锚点文件依赖; 曾漏声明导致去噪失效 (拼成根路径 /ack_*.json 读写全败), 每轮心跳刷一条"下发确认" */
     if (!rateLimit(clientIp(), 60)) respond(array('success' => false, 'message' => '请求过于频繁'));
@@ -2750,6 +2762,8 @@ function handleMonitorVars($body) {
     $cfgStopped = false;
     $editMirrorStopped = false;
     $cfgMirrorStopped = false;
+    $editMirrorSem = false;
+    $cfgMirrorSem = false;
     if ($editOut !== '' && $editAck !== '' &&
         (monStampOf($editOut) === $editAck || hash('sha256', $editOut) === $editAck)) {
         $editOut = '';
@@ -2762,16 +2776,23 @@ function handleMonitorVars($body) {
     }
     /* 镜像兜底 (26-10-19): ack 不匹配但设备上报镜像已与基线内容完全一致 => 设备实际已拥有该内容,
      * 视为已应用停发。兜底设备端 applied 锚点丢失/写不进 (7F4A) 或本地回滚后锚点仍命中原内容
-     * 导致"永远跳过、服务端永远重发"的死循环 (92B4 类); 严格字面相等才停, 不做语义近似 */
-    if ($editOut !== '' && !$editStopped && strval(isset($row['edit_var_dev']) ? $row['edit_var_dev'] : '') === $editOut) {
+     * 导致"永远跳过、服务端永远重发"的死循环 (92B4 类);
+     * 26-10-22 扩展: 设备镜像为业务脚本重写后的 pretty JSON 且常缺"上次修改"章, 与紧凑基线字面永不
+     * 相等 (7F4A/92B4 线上取证), 故增加语义相等分支——两侧均为数组 JSON 且去"上次修改"后逐字段一致
+     * (monVarsDiff, 顺序无关) 也判定已应用停发; 仅时间戳章不同的 config 假在途同此修复 */
+    $mEqEdit = $editOut !== '' && !$editStopped ? monVarsMirrorEq(isset($row['edit_var_dev']) ? $row['edit_var_dev'] : '', $editOut) : 0;
+    $mEqCfg = $cfgOut !== '' && !$cfgStopped ? monVarsMirrorEq(isset($row['config_var_dev']) ? $row['config_var_dev'] : '', $cfgOut) : 0;
+    if ($mEqEdit > 0) {
         $editOut = '';
         $editStopped = true;
         $editMirrorStopped = true;
+        $editMirrorSem = ($mEqEdit === 2);
     }
-    if ($cfgOut !== '' && !$cfgStopped && strval(isset($row['config_var_dev']) ? $row['config_var_dev'] : '') === $cfgOut) {
+    if ($mEqCfg > 0) {
         $cfgOut = '';
         $cfgStopped = true;
         $cfgMirrorStopped = true;
+        $cfgMirrorSem = ($mEqCfg === 2);
     }
     if ($editStopped || $cfgStopped) {
         /* 去噪: 心跳每轮都会例行确认已应用内容, 同一 ack 锚点只记首次审计,
@@ -2783,7 +2804,9 @@ function handleMonitorVars($body) {
             if ($editMirrorStopped || $cfgMirrorStopped) {
                 auditLog('下发确认', array('device' => maskId($uuid), 'by' => '系统', 'edit' => $editMirrorStopped ? 1 : 0,
                     'config' => $cfgMirrorStopped ? 1 : 0,
-                    'reason' => '设备回传 ack 缺失/未更新, 但上报镜像已与基线一致, 判定已应用停发'));
+                    'reason' => ($editMirrorSem || $cfgMirrorSem)
+                        ? '设备回传 ack 缺失/未更新, 但上报镜像与基线语义一致 (仅时间戳/格式差异), 判定已应用停发'
+                        : '设备回传 ack 缺失/未更新, 但上报镜像已与基线一致, 判定已应用停发'));
             } else {
                 auditLog('下发确认', array('device' => maskId($uuid), 'by' => '设备', 'edit' => $editStopped ? 1 : 0, 'config' => $cfgStopped ? 1 : 0));
             }
