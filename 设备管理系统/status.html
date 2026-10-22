@@ -1809,7 +1809,7 @@ function setStatus(v, targetUuid) {
     }).then(function (j) {
         if (!j) return;
         if (!j.success) { toast(j.message || '设置失败', false); return; }
-        toast(j.status === '' ? '状态已设为: 正常' : '状态已设为: ' + j.status + ' (10 小时后自动恢复)', true);
+        toast(j.status === '' ? '状态已设为: 正常' : '状态已设为: ' + j.status, true);
         refresh();
     }).catch(function () {
         toast('设置失败, 请重试', false);

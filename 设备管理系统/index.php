@@ -1458,8 +1458,7 @@ function handleMonitorReport($body) {
     /* 清零指令: 置位后随下一次心跳下发, 下发即消费清零 (设备端收到后归零本地计数, 下次心跳上报 0) */
     $resetCmd = !empty($row['reset_cmd']);
     if ($resetCmd) dbExec("UPDATE client_status SET reset_cmd = 0 WHERE device_id = ?", array($deviceId));
-    $effStatus = monMarkStatus(isset($row['status']) ? $row['status'] : '', isset($row['status_ms']) ? $row['status_ms'] : 0, $repUuid);
-    respond(array('success' => true, 'timestamp' => intval($now / 1000), 'status' => $effStatus, 'resetCmd' => $resetCmd, 'screen' => monScreenInfo($repUuid, nowSec())));
+    respond(array('success' => true, 'timestamp' => intval($now / 1000), 'status' => strval(isset($row['status']) ? $row['status'] : ''), 'resetCmd' => $resetCmd, 'screen' => monScreenInfo($repUuid, nowSec())));
 }
 
 /* 管理端: 下发任务/错误计数清零指令 (全部设备置位 reset_cmd, 设备心跳领取后本地归零并回传 0) */
@@ -1909,7 +1908,6 @@ function handleMonitorList($query) {
     $rows = array();
     while ($row = $res->fetch_assoc()) {
         $row['online'] = (nowMs() - intval($row['last_seen'])) < MONITOR_ONLINE_MS;
-        $row['status'] = monMarkStatus(isset($row['status']) ? $row['status'] : '', isset($row['status_ms']) ? $row['status_ms'] : 0, $row['uuid']);
         $row['thumb_mtime'] = monThumbMtime($row['uuid']);   /* 缩略图版本号, 前端据此判断换图 */
         $row['screen_state'] = monScreenInfo($row['uuid'], nowSec());   /* 画面状态 (静止/黑屏) */
         $rows[] = $row;
@@ -2480,7 +2478,6 @@ function handleMonuDevices($query) {
         $res = $st->get_result();
         while ($row = $res->fetch_assoc()) {
             $row['online'] = (nowMs() - intval($row['last_seen'])) < MONITOR_ONLINE_MS;
-            $row['status'] = monMarkStatus(isset($row['status']) ? $row['status'] : '', isset($row['status_ms']) ? $row['status_ms'] : 0, $row['uuid']);
             $row['thumb_mtime'] = monThumbMtime($row['uuid']);
             unset($row['device_id']);
             $devices[] = $row;
@@ -2491,17 +2488,7 @@ function handleMonuDevices($query) {
 
 /* 客户设置设备状态: uuid 即凭证, status ∈ 挂机/离线/在线 (在线存空串)
  * 管理员模式: 携带监控密钥 key 时, 可用 deviceId 或 uuid 定位并修改任意设备 */
-/* 客户标记惰性过期 (26-10-05): 挂机/离线标记 10 小时后自动回正常;
- * 无服务端定时任务, 各读取处判断 status_ms 超时则按正常返回并顺手清库;
- * status_ms=0 表示未标记或已恢复 (点"正常"时清零); 旧数据无时间戳永不过期 */
-function monMarkStatus($status, $statusMs, $uuid) {
-    $st = strval($status);
-    $ms = intval($statusMs);
-    if ($st === '' || $ms <= 0) return $st;
-    if ((nowMs() - $ms) <= 10 * 3600 * 1000) return $st;
-    if ($uuid !== '') dbExec("UPDATE client_status SET status = '', status_ms = 0 WHERE uuid = ?", array($uuid));
-    return '';
-}
+/* 客户标记的设备状态 (挂机/离线) 原样返回, 持久保留直到客户手动改回 (26-10-22: 已删除 10 小时自动过期重置) */
 
 function handleMonitorSetStatus($body) {
     $status = strval(isset($body['status']) ? $body['status'] : '');
