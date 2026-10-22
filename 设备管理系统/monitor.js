@@ -1254,6 +1254,12 @@ function monThumbUpload() {
         slog('缩略图: base64 读取失败, 放弃本张');
         return '';
     }
+    /* 服务端 img 字段上限 2,000,000 字符 (index.php handleMonitorThumb), 超限会被 400 拒绝;
+     * 正常 480 宽 JPEG q80 仅 30-100KB (base64 40-135KB), 此保护只挡异常大图 (截图未缩放等) */
+    if (imgB64.length > 1900000) {
+        slog('缩略图: base64 超限 (' + imgB64.length + ' 字符), 放弃本张');
+        return '';
+    }
     data.img = imgB64;
     /* 上传体 (20-55KB) 同步 postJson 会阻塞主线程数秒, 优先放子线程; threads 不可用
      * 时退化同步 (心跳周期 30s, 单次阻塞 1-3s 可接受) */

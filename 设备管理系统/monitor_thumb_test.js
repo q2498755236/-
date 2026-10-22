@@ -36,3 +36,8 @@ sent = null; svs = {}; shells = [];
 auto.shell = function (c) { shells.push(c); return c.indexOf('base64') === 0 ? 'xx' : ''; };
 monThumbUpload();
 ck('base64 过短放弃不发送', sent === null);
+/* base64 超限 => 放弃 (服务端 img 上限 2MB, 防 400 刷日志) */
+sent = null; svs = {}; shells = [];
+auto.shell = function (c) { shells.push(c); return c.indexOf('base64') === 0 ? 'A'.repeat(1900001) : ''; };
+monThumbUpload();
+ck('base64 超限放弃不发送', sent === null);
