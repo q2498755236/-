@@ -154,6 +154,22 @@ button.solid-red:hover { background: #ff5c74; box-shadow: 0 4px 18px rgba(255,61
     padding: 0 8px; box-sizing: border-box; outline: none; text-align: right;
 }
 .vars-row .vr-input:focus { border-color: var(--acid); }
+/* 备用项: 主值行下的两个可改草稿槽, 随数组 JSON 保存下发 (backup1/backup2 字段) */
+.vars-slots { display: flex; gap: 10px; padding: 0 12px 8px 12px; margin-top: -4px; }
+.vars-slots .vs-item { flex: 1; min-width: 0; display: flex; gap: 4px; align-items: center; }
+.vars-slots .vr-slot {
+    flex: 1; min-width: 0; height: 24px; background: #0d0d12; border: 1px dashed var(--line2); border-radius: 3px;
+    color: var(--txt2); font-family: var(--mono); font-size: 11px;
+    padding: 0 7px; box-sizing: border-box; outline: none;
+}
+.vars-slots .vr-slot:focus { border-color: var(--acid); color: var(--acid); }
+.vars-slots .vs-btn {
+    flex: none; height: 24px; padding: 0 7px; font-size: 11px; line-height: 1;
+    background: transparent; border: 1px dashed var(--line2); border-radius: 3px;
+    color: var(--txt3); cursor: pointer;
+}
+.vars-slots .vs-btn:hover { border-color: var(--acid); color: var(--acid); }
+.vars-bak { font-family: var(--mono); font-size: 10px; color: var(--txt3); padding: 0 12px 6px; word-break: break-all; }
 .vars-empty { color: var(--txt3); font-size: 12px; padding: 4px 0; }
 .vars-raw { font-family: var(--mono); font-size: 11px; color: var(--txt2); white-space: pre-wrap; word-break: break-all; padding: 8px 10px; border: 1px solid var(--line); border-radius: 3px; }
 /* 操作日志 (管理员) */
@@ -1034,6 +1050,7 @@ function renderAll(j) {
             + '<button class="' + clsIdle.trim() + '" onclick="setStatus(\'挂机\',\'' + esc(d.uuid) + '\')"><i data-lucide="coffee"></i>挂机</button>'
             + '<button class="' + clsOff.trim() + '" onclick="setStatus(\'离线\',\'' + esc(d.uuid) + '\')"><i data-lucide="power-off"></i>离线</button>'
             + '<button title="设备变量" onclick="openVars(\'' + esc(d.uuid) + '\')"><i data-lucide="braces"></i></button>'
+            + '<button title="设备日志" onclick="openDeviceLog(\'' + esc(d.uuid) + '\')"><i data-lucide="scroll-text"></i></button>'
             + '<button class="del" title="删除设备" onclick="deleteDevice(\'' + esc(d.uuid) + '\',\'\')"><i data-lucide="trash-2"></i></button>';
         el.appendChild(row);
     });
@@ -1149,6 +1166,7 @@ function renderBinds(j) {
             + '<button class="' + clsIdle.trim() + '" onclick="setStatus(\'挂机\',\'' + esc(d.uuid) + '\')"><i data-lucide="coffee"></i>挂机</button>'
             + '<button class="' + clsOff.trim() + '" onclick="setStatus(\'离线\',\'' + esc(d.uuid) + '\')"><i data-lucide="power-off"></i>离线</button>'
             + '<button title="设备变量" onclick="openVars(\'' + esc(d.uuid) + '\')"><i data-lucide="braces"></i></button>'
+            + '<button title="设备日志" onclick="openDeviceLog(\'' + esc(d.uuid) + '\')"><i data-lucide="scroll-text"></i></button>'
             + '<button class="unbind" onclick="unbindDevice(\'' + esc(d.uuid) + '\')"><i data-lucide="link-2-off"></i>解绑</button>';
         el.appendChild(row);
     });
@@ -1158,10 +1176,22 @@ function renderBinds(j) {
 /* ============ 设备变量 (查看变量/修改变量/配置变量) ============ */
 var VARS_UUID = '', VARS_VIEW = '', VARS_EDIT = '', VARS_DEV = '', VARS_CFG = '', VARS_CFG_DEV = '';
 var VARS_EDIT_STOPPED = false, VARS_CFG_STOPPED = false;
+var VARS_EDIT_BAK = '', VARS_CFG_BAK = '';   /* 备用项草稿 (服务端库, 不下发设备) */
+var VARS_SEQ = 0;
 
-function varsRows(text) {
-    /* [{"name":..,"count":..}] 每条一行; 解析失败显示原文 */
+function varsRows(text, bakText) {
+    /* [{"name":..,"count":..}] 每条一行; 解析失败显示原文;
+     * bakText (备用草稿) 按条目 name 匹配, 有备用值时在主值行下叠加只读展示 */
     if (!text || !String(text).trim()) return '<div class="vars-empty">暂无数据</div>';
+    var bakMap = {};
+    if (bakText && String(bakText).trim()) {
+        try {
+            var ba = JSON.parse(String(bakText));
+            if (Array.isArray(ba)) ba.forEach(function (b) {
+                if (b && typeof b === 'object' && b.name !== undefined) bakMap[String(b.name)] = b;
+            });
+        } catch (eb) {}
+    }
     try {
         var arr = JSON.parse(String(text));
         if (!Array.isArray(arr) || arr.length === 0) return '<div class="vars-empty">暂无数据</div>';
@@ -1171,7 +1201,13 @@ function varsRows(text) {
             }
             var n = String(it.name === undefined ? '' : it.name);
             var c = (it.count === undefined || it.count === null) ? '' : String(it.count);
-            return '<div class="vars-row"><span class="vr-name">' + esc(n) + '</span><span class="vr-count">' + esc(c) + '</span></div>';
+            var b = bakMap[n] || {};
+            var b1 = (b.backup1 === undefined || b.backup1 === null) ? '' : String(b.backup1);
+            var b2 = (b.backup2 === undefined || b.backup2 === null) ? '' : String(b.backup2);
+            var bak = (b1 !== '' || b2 !== '')
+                ? '<div class="vars-bak">备用: 1 ' + esc(b1 === '' ? '-' : b1) + '　2 ' + esc(b2 === '' ? '-' : b2) + '</div>'
+                : '';
+            return '<div class="vars-row"><span class="vr-name">' + esc(n) + '</span><span class="vr-count">' + esc(c) + '</span></div>' + bak;
         }).join('');
     } catch (e) {
         return '<div class="vars-raw">' + esc(String(text)) + '</div>';
@@ -1180,6 +1216,10 @@ function varsRows(text) {
 
 function openVars(uuid) {
     VARS_UUID = uuid;
+    /* 请求序号守卫: 慢主机上连续打开两台设备弹窗时, 先打开的 fetch 响应可能后到,
+     * 若无守卫会用 A 的数据覆盖 VARS_* 而弹窗标题已是 B, 用户编辑保存即把
+     * A 的配置写进 B 的下发暂存 (跨设备命令串台); 序号不符的过期响应直接丢弃 */
+    var seq = ++VARS_SEQ;
     var content = document.getElementById('modalContent');
     content.innerHTML = '<h3><i data-lucide="braces"></i>设备变量<span class="vars-uuid">' + esc(uuid) + '</span></h3>'
         + '<div class="modal-body">加载中...</div>';
@@ -1197,6 +1237,7 @@ function openVars(uuid) {
         return r.json();
     }).then(function (j) {
         if (!j) return;
+        if (seq !== VARS_SEQ) return;   /* 过期响应: 用户已切换到其他设备弹窗 */
         if (!j.success) { toast(j.message || '读取失败', false); closeModal(); return; }
         VARS_VIEW = String(j.view || '');
         VARS_DEV = String(j.devEdit || '');
@@ -1205,6 +1246,8 @@ function openVars(uuid) {
         VARS_CFG_DEV = String(j.devConfig || '');
         VARS_CFG = String(j.config || '');
         VARS_CFG_STOPPED = !!j.configStopped;
+        VARS_EDIT_BAK = String(j.editBackup || '');
+        VARS_CFG_BAK = String(j.configBackup || '');
         renderVarsModal();
     }).catch(function () { toast('读取失败, 请重试', false); closeModal(); });
 }
@@ -1213,8 +1256,12 @@ function renderVarsModal() {
     VARS_FORMS = {};
     var hasDev = String(VARS_DEV).trim() !== '';
     var hasCfg = String(VARS_CFG_DEV).trim() !== '';
-    var pendingE = hasDev && !VARS_EDIT_STOPPED && String(VARS_EDIT).trim() !== '' && !varsCoreEq(VARS_EDIT, VARS_DEV);
-    var pendingC = hasCfg && !VARS_CFG_STOPPED && String(VARS_CFG).trim() !== '' && !varsCoreEq(VARS_CFG, VARS_CFG_DEV);
+    /* 在途判定: 内容不同 (varsCoreEq 过滤"上次修改") 或 时间戳不同 (重复保存仅刷新时间戳,
+     * 内容相同也会让弹窗外旧时间戳与编辑底稿新时间戳不一致, 同样提示在途防困惑) */
+    var pendingE = hasDev && !VARS_EDIT_STOPPED && String(VARS_EDIT).trim() !== ''
+        && (!varsCoreEq(VARS_EDIT, VARS_DEV) || varsStampOf(VARS_EDIT) !== varsStampOf(VARS_DEV));
+    var pendingC = hasCfg && !VARS_CFG_STOPPED && String(VARS_CFG).trim() !== ''
+        && (!varsCoreEq(VARS_CFG, VARS_CFG_DEV) || varsStampOf(VARS_CFG) !== varsStampOf(VARS_CFG_DEV));
     var content = document.getElementById('modalContent');
     content.innerHTML = '<h3><i data-lucide="braces"></i>设备变量<span class="vars-uuid">' + esc(VARS_UUID) + '</span></h3>'
         + '<div class="vars-group"><div class="vars-title">查看变量 <span class="vars-sub">设备上报 · 只读</span></div>'
@@ -1223,14 +1270,14 @@ function renderVarsModal() {
         + (hasDev ? '<button class="ghost" onclick="editVarsForm(\'edit\')">编辑</button>' : '')
         + '</div>'
         + (hasDev
-            ? '<div id="editArea">' + varsRows(VARS_DEV) + (pendingE ? '<div class="vars-sub">有已下发内容待设备心跳应用</div>' : '') + '</div>'
+            ? '<div id="editArea">' + varsRows(VARS_DEV, VARS_EDIT_BAK) + (pendingE ? '<div class="vars-sub">有已下发内容待设备心跳应用</div>' : '') + '</div>'
             : '<div class="vars-sub">设备尚未上报修改变量内容, 暂不可修改</div>')
         + '</div>'
         + '<div class="vars-group"><div class="vars-title">配置变量 <span class="vars-sub">设备上报 · 可修改下发</span>'
         + (hasCfg ? '<button class="ghost" onclick="editVarsForm(\'config\')">编辑</button>' : '')
         + '</div>'
         + (hasCfg
-            ? '<div id="cfgArea">' + varsRows(VARS_CFG_DEV) + (pendingC ? '<div class="vars-sub">有已下发内容待设备心跳应用</div>' : '') + '</div>'
+            ? '<div id="cfgArea">' + varsRows(VARS_CFG_DEV, VARS_CFG_BAK) + (pendingC ? '<div class="vars-sub">有已下发内容待设备心跳应用</div>' : '') + '</div>'
             : '<div class="vars-sub">设备尚未上报配置变量内容, 暂不可修改</div>')
         + '</div>'
         + '<div class="modal-footer"><button class="ghost" onclick="closeModal()">关闭</button></div>';
@@ -1300,15 +1347,34 @@ function editVarsForm(kind) {
     }
     var parsed = null;
     try { var p = JSON.parse(init); if (Array.isArray(p)) parsed = p; } catch (e) {}
-    VARS_FORMS[kind] = { arr: parsed };
+    /* 防错误下发 (26-10-18): 停发中底稿取设备内容, 但设备数组可能被本地回滚/脚本重写成旧值
+     * (如 7F4A 定时时间 00:10 残留) — 设备内容与网页基线语义不同时标记, 保存前强制确认,
+     * 防止用户改其他字段时把设备旧值整包固化入基线误下发 */
+    var devDiverged = (stopped === true)
+        && String(k.dev).trim() !== '' && String(k.pend).trim() !== ''
+        && !varsCoreEq(k.dev, k.pend);
+    VARS_FORMS[kind] = { arr: parsed, devDiverged: devDiverged };
     var area = document.getElementById(k.area);
+    var warnHtml = devDiverged
+        ? '<div class="vars-sub" style="color:#c0392b;margin-bottom:6px">&#9888; 设备上报内容与网页上次保存的基线不同 (设备可能本地回滚或被脚本改写)。编辑底稿取的是设备当前值, 保存将覆盖网页基线并下发, 请核对后再保存。</div>'
+        : '';
     var footer = '<div class="modal-footer"><button class="ghost" onclick="renderVarsModal()">取消</button>'
         + '<button onclick="saveVars(\'' + kind + '\')">保存</button></div>';
     if (parsed === null) {
         /* 非数组 JSON: 保持原文编辑 */
-        area.innerHTML = '<textarea class="vars-textarea" spellcheck="false">' + esc(init) + '</textarea>' + footer;
+        area.innerHTML = warnHtml + '<textarea class="vars-textarea" spellcheck="false">' + esc(init) + '</textarea>' + footer;
     } else {
-        /* 数组: 与查看变量同行样式, name 只读, 仅 count 值可改; "上次修改"行只读 */
+        /* 数组: 与查看变量同行样式, name 只读, 仅 count 值可改; "上次修改"行只读;
+         * 每个可编辑项下加两个备用槽 (backup1/backup2), 仅存服务端草稿, 不下发设备 */
+        var bakMap = {};
+        try {
+            var bakArr = JSON.parse(kind === 'config' ? VARS_CFG_BAK : VARS_EDIT_BAK);
+            if (Array.isArray(bakArr)) {
+                bakArr.forEach(function (b) {
+                    if (b && typeof b === 'object' && b.name !== undefined) bakMap[String(b.name)] = b;
+                });
+            }
+        } catch (e) {}
         var rows = parsed.map(function (it, i) {
             if (typeof it !== 'object' || it === null) {
                 return '<div class="vars-row"><span class="vr-name">' + esc(String(it)) + '</span><span class="vr-count"></span></div>';
@@ -1318,8 +1384,17 @@ function editVarsForm(kind) {
             if (n === '上次修改') {
                 return '<div class="vars-row"><span class="vr-name">' + esc(n) + '</span><span class="vr-count">' + esc(c) + '</span></div>';
             }
+            var b = bakMap[n] || {};
+            var b1 = (b.backup1 === undefined || b.backup1 === null) ? '' : String(b.backup1);
+            var b2 = (b.backup2 === undefined || b.backup2 === null) ? '' : String(b.backup2);
             return '<div class="vars-row"><span class="vr-name">' + esc(n) + '</span>'
-                + '<input class="vr-input" data-idx="' + i + '" value="' + esc(c) + '" inputmode="decimal" spellcheck="false"></div>';
+                + '<input class="vr-input" data-idx="' + i + '" value="' + esc(c) + '" inputmode="decimal" spellcheck="false"></div>'
+                + '<div class="vars-slots">'
+                + '<div class="vs-item"><input class="vr-slot" data-idx="' + i + '" data-slot="backup1" value="' + esc(b1) + '" spellcheck="false">'
+                + '<button class="vs-btn" title="应用此备用值到主值" onclick="applySlot(this)">&#8599;</button></div>'
+                + '<div class="vs-item"><input class="vr-slot" data-idx="' + i + '" data-slot="backup2" value="' + esc(b2) + '" spellcheck="false">'
+                + '<button class="vs-btn" title="应用此备用值到主值" onclick="applySlot(this)">&#8599;</button></div>'
+                + '</div>';
         }).join('');
         area.innerHTML = rows + footer;
     }
@@ -1346,6 +1421,19 @@ function stampApply(arr) {
     if (!found) arr.push({ name: '上次修改', count: stampNow() });
 }
 
+/* 备用槽应用: 把本组备用框的值填入同条目主值输入框 (仅前端表单, 需点保存才下发) */
+function applySlot(btn) {
+    var item = btn.parentElement;
+    var slot = item.querySelector('.vr-slot');
+    if (!slot || String(slot.value).trim() === '') { toast('备用值为空, 先填写再应用', false); return; }
+    var idx = String(slot.getAttribute('data-idx'));
+    var row = item.parentElement.previousElementSibling;
+    var input = row ? row.querySelector('.vr-input[data-idx="' + idx + '"]') : null;
+    if (!input) { toast('未找到主值输入框', false); return; }
+    input.value = slot.value;
+    toast('备用值已填入主值, 点保存后下发', true);
+}
+
 function saveVars(kind) {
     var k = varsKind(kind);
     var form = VARS_FORMS[kind];
@@ -1364,9 +1452,9 @@ function saveVars(kind) {
         }
         stampApply(form.arr);
         text = JSON.stringify(form.arr);
-    } else {
-        var ta = document.querySelector('#' + k.area + ' .vars-textarea');
-        text = String(ta ? ta.value : '');
+        } else {
+            var ta = document.querySelector('#' + k.area + ' .vars-textarea');
+            text = String(ta ? ta.value : '');
         if (text.trim() !== '') {
             var parsed = null, isJson = true;
             try { parsed = JSON.parse(text); } catch (e) { isJson = false; }
@@ -1386,8 +1474,26 @@ function saveVars(kind) {
             }
         }
     }
+    /* 防错误下发: 设备内容与基线语义不同时, 保存=用设备旧值覆盖网页配置, 强制显式确认 */
+    if (form.devDiverged && !window.confirm('设备上报内容与网页上次保存的基线不同, 保存将以设备当前值为准覆盖网页配置并下发。\n若设备本地数据可能过期/被改写, 请先取消并核对内容。确认下发?')) return;
     var payload = { uuid: VARS_UUID };
     payload[k.field] = text;
+    /* 备用槽收集 (仅表单模式有 .vr-slot 元素): 深拷贝数组写 backup1/backup2 (空值删字段);
+     * 下发数组 (payload[k.field]) 保持纯 name/count, 备用仅存服务端供下次编辑回显 */
+    var slots = document.querySelectorAll('#' + k.area + ' .vr-slot');
+    if (slots.length > 0 && form.arr !== null) {
+        var bakArr = JSON.parse(JSON.stringify(form.arr));
+        for (var s = 0; s < slots.length; s++) {
+            var si = parseInt(slots[s].getAttribute('data-idx'), 10);
+            var bit = bakArr[si];
+            if (!bit || typeof bit !== 'object') continue;
+            var slotName = String(slots[s].getAttribute('data-slot'));
+            var sv = String(slots[s].value).trim();
+            if (sv === '') delete bit[slotName];
+            else bit[slotName] = isNaN(Number(sv)) ? sv : Number(sv);
+        }
+        payload[kind === 'config' ? 'configBackup' : 'editBackup'] = JSON.stringify(bakArr);
+    }
     var hdrs = { 'Content-Type': 'application/json' };
     if (ACC_MODE) {
         payload.token = localStorage.getItem('monitor_token') || '';
@@ -1407,6 +1513,10 @@ function saveVars(kind) {
         if (!j.success) { toast(j.message || '保存失败', false); return; }
         if (kind === 'config') VARS_CFG = String(j.config !== undefined ? j.config : text);
         else VARS_EDIT = String(j.edit !== undefined ? j.edit : text);
+        /* 同步备用草稿缓存: 保存成功后本弹窗内再点"编辑"时备用框才能回显,
+         * 否则 editVarsForm 仍读打开弹窗时的旧 VARS_*_BAK (空), 备用看似丢失 */
+        if (kind === 'config') { if (payload.configBackup !== undefined) VARS_CFG_BAK = payload.configBackup; }
+        else { if (payload.editBackup !== undefined) VARS_EDIT_BAK = payload.editBackup; }
         toast(k.label + '已保存, 设备下个心跳生效', true);
         renderVarsModal();
     }).catch(function () { toast('保存失败, 请重试', false); });
@@ -1428,10 +1538,26 @@ function confirmModal(msg, onYes, danger) {
 function closeModal(e) {
     if (e && e.target !== document.getElementById('modalOverlay')) return;
     document.getElementById('modalOverlay').style.display = 'none';
+    /* 关闭弹窗即失效未返回的变量请求, 防止迟到响应渲染进已关闭的弹窗 */
+    VARS_SEQ++;
 }
 
 /* 操作日志 (仅管理员, 入口在 adminBar): 拉取审计日志尾部, 按 操作者(管理员/账号/设备) + 内容摘要 展示 */
 var AUDIT_LIMIT = 300;
+/* 日志过滤: qs 为空串=全部; exclude=下发确认=常规; action=xxx=单类型 */
+var AUDIT_FILTERS = [
+    { label: '全部', qs: '' },
+    { label: '常规 (隐藏下发确认)', qs: '&exclude=' + encodeURIComponent('下发确认') },
+    { label: '下发确认', qs: '&action=' + encodeURIComponent('下发确认') },
+    { label: '状态修改', qs: '&action=' + encodeURIComponent('状态修改') },
+    { label: '变量修改', qs: '&action=' + encodeURIComponent('变量修改') },
+    { label: '配置变量修改', qs: '&action=' + encodeURIComponent('配置变量修改') },
+    { label: '配置上发', qs: '&action=' + encodeURIComponent('配置上发') },
+    { label: '下发内容', qs: '&action=' + encodeURIComponent('下发内容') },
+    { label: '漂移重发', qs: '&action=' + encodeURIComponent('漂移重发') },
+];
+var AUDIT_FILTER = 0;   /* AUDIT_FILTERS 下标 */
+function auditFilterQs() { return AUDIT_FILTERS[AUDIT_FILTER].qs; }
 function fmtAuditTs(ts) {
     var d = new Date(ts);
     if (isNaN(d.getTime())) return String(ts);
@@ -1445,7 +1571,7 @@ function openAudit(limit) {
         + '<div class="modal-body">加载中...</div>';
     document.getElementById('modalOverlay').style.display = 'flex';
     icons();
-    fetch('/api/monitor/audit?key=' + encodeURIComponent(KEY) + '&limit=' + AUDIT_LIMIT, { method: 'GET' })
+    fetch('/api/monitor/audit?key=' + encodeURIComponent(KEY) + '&limit=' + AUDIT_LIMIT + auditFilterQs(), { method: 'GET' })
         .then(function (r) { return r.json(); })
         .then(function (j) {
             if (!j || !j.success) { toast((j && j.message) || '读取失败', false); closeModal(); return; }
@@ -1453,51 +1579,55 @@ function openAudit(limit) {
         })
         .catch(function () { toast('读取失败, 请重试', false); closeModal(); });
 }
+/* 审计日志行渲染 (管理员日志弹窗与客户设备日志弹窗共用) */
+function renderAuditRows(rows) {
+    var SKIP = { by: 1, device: 1, uuid: 1, diff: 1, content: 1, cfg: 1, edit: 1, cfgContent: 1, editContent: 1 };
+    if (!rows.length) return '<div class="vars-empty">暂无日志</div>';
+    return '<div class="au-head"><span>TIME</span><span>ACTION</span><span>BY</span><span>DEVICE</span><span class="au-det">DETAIL</span></div>'
+        + rows.map(function (r) {
+            var d = r.detail || {};
+            var by = String(d.by || '');
+            var dev = String(d.device || d.uuid || d.code || '');
+            var rest = Object.keys(d).filter(function (k) { return !SKIP[k]; })
+                .map(function (k) { return k + '=' + String(d[k]); }).join('; ');
+            var cls = by === '管理员' ? 'au-admin' : (by.indexOf('账号') === 0 ? 'au-user' : 'au-dev');
+            /* 变更明细: 字段: 旧值 -> 新值 (含 新增/删除), 有修改的操作单独高亮展示 */
+            var diff = String(d.diff || '');
+            var diffHtml = '';
+            if (diff !== '') {
+                diffHtml = '<div class="au-diff"><span class="au-df-t">变更</span>'
+                    + diff.split('; ').map(function (s) {
+                        var m = s.match(/^(.+?):\s*(.+?)\s*->\s*(.+)$/);
+                        if (m) return '<div class="au-df-l"><span class="au-df-k">' + esc(m[1]) + '</span>'
+                            + '<s>' + esc(m[2]) + '</s><i data-lucide="chevrons-right"></i><b>' + esc(m[3]) + '</b></div>';
+                        return '<div class="au-df-l">' + esc(s) + '</div>';
+                    }).join('') + '</div>';
+            }
+            /* 内容快照: 点击展开全文 (content=网页保存快照, cfgContent=设备上发配置, editContent=设备上发修改变量;
+             * 旧日志无 *Content 字段时兜底显示 cfg/edit 摘要) */
+            var snaps = [];
+            if (String(d.content || '') !== '') snaps.push(['内容', String(d.content)]);
+            else if (String(d.cfg || d.edit || '') !== '') snaps.push(['内容', String(d.cfg || d.edit)]);
+            if (String(d.cfgContent || '') !== '') snaps.push([r.action === '下发内容' ? '下发配置' : '上发配置', String(d.cfgContent)]);
+            if (String(d.editContent || '') !== '') snaps.push([r.action === '下发内容' ? '下发修改' : '上发修改', String(d.editContent)]);
+            var snapHtml = snaps.map(function (s) {
+                return '<details class="au-content"><summary>' + esc(s[0]) + ' (' + s[1].length + ' 字符)</summary><div class="au-snap">' + esc(s[1]) + '</div></details>';
+            }).join('');
+            return '<div class="au-wrap">'
+                + '<div class="au-row">'
+                + '<span class="au-ts">' + esc(fmtAuditTs(r.ts)) + '</span>'
+                + '<span class="au-act">' + esc(r.action) + '</span>'
+                + '<span class="au-by ' + cls + '">' + esc(by || '-') + '</span>'
+                + '<span class="au-dev">' + esc(dev || '-') + '</span>'
+                + '<span class="au-det">' + esc(rest || '-') + '</span></div>'
+                + diffHtml + snapHtml + '</div>';
+        }).join('');
+}
+
 function renderAudit(rows) {
     var content = document.getElementById('modalContent');
-    var SKIP = { by: 1, device: 1, uuid: 1, diff: 1, content: 1, cfg: 1, edit: 1, cfgContent: 1, editContent: 1 };
-    var body = rows.length
-        ? '<div class="au-head"><span>TIME</span><span>ACTION</span><span>BY</span><span>DEVICE</span><span class="au-det">DETAIL</span></div>'
-            + rows.map(function (r) {
-                var d = r.detail || {};
-                var by = String(d.by || '');
-                var dev = String(d.device || d.uuid || d.code || '');
-                var rest = Object.keys(d).filter(function (k) { return !SKIP[k]; })
-                    .map(function (k) { return k + '=' + String(d[k]); }).join('; ');
-                var cls = by === '管理员' ? 'au-admin' : (by.indexOf('账号') === 0 ? 'au-user' : 'au-dev');
-                /* 变更明细: 字段: 旧值 -> 新值 (含 新增/删除), 有修改的操作单独高亮展示 */
-                var diff = String(d.diff || '');
-                var diffHtml = '';
-                if (diff !== '') {
-                    diffHtml = '<div class="au-diff"><span class="au-df-t">变更</span>'
-                        + diff.split('; ').map(function (s) {
-                            var m = s.match(/^(.+?):\s*(.+?)\s*->\s*(.+)$/);
-                            if (m) return '<div class="au-df-l"><span class="au-df-k">' + esc(m[1]) + '</span>'
-                                + '<s>' + esc(m[2]) + '</s><i data-lucide="chevrons-right"></i><b>' + esc(m[3]) + '</b></div>';
-                            return '<div class="au-df-l">' + esc(s) + '</div>';
-                        }).join('') + '</div>';
-                }
-                /* 内容快照: 点击展开全文 (content=网页保存快照, cfgContent=设备上发配置, editContent=设备上发修改变量;
-                 * 旧日志无 *Content 字段时兜底显示 cfg/edit 摘要) */
-                var snaps = [];
-                if (String(d.content || '') !== '') snaps.push(['内容', String(d.content)]);
-                else if (String(d.cfg || d.edit || '') !== '') snaps.push(['内容', String(d.cfg || d.edit)]);
-                if (String(d.cfgContent || '') !== '') snaps.push(['上发配置', String(d.cfgContent)]);
-                if (String(d.editContent || '') !== '') snaps.push(['上发修改', String(d.editContent)]);
-                var snapHtml = snaps.map(function (s) {
-                    return '<details class="au-content"><summary>' + esc(s[0]) + ' (' + s[1].length + ' 字符)</summary><div class="au-snap">' + esc(s[1]) + '</div></details>';
-                }).join('');
-                return '<div class="au-wrap">'
-                    + '<div class="au-row">'
-                    + '<span class="au-ts">' + esc(fmtAuditTs(r.ts)) + '</span>'
-                    + '<span class="au-act">' + esc(r.action) + '</span>'
-                    + '<span class="au-by ' + cls + '">' + esc(by || '-') + '</span>'
-                    + '<span class="au-dev">' + esc(dev || '-') + '</span>'
-                    + '<span class="au-det">' + esc(rest || '-') + '</span></div>'
-                    + diffHtml + snapHtml + '</div>';
-            }).join('')
-        : '<div class="vars-empty">暂无日志</div>';
-    content.innerHTML = '<h3><i data-lucide="scroll-text"></i>操作日志<span class="vars-uuid">共 ' + rows.length + ' 条</span></h3>'
+    var body = renderAuditRows(rows);
+    content.innerHTML = '<h3><i data-lucide="scroll-text"></i>操作日志<span class="vars-uuid">共 ' + rows.length + ' 条 · ' + esc(AUDIT_FILTERS[AUDIT_FILTER].label) + '</span></h3>'
         + '<div class="modal-body">'
         + '<div class="au-tools">'
         + '<select onchange="openAudit(parseInt(this.value,10))">'
@@ -1505,10 +1635,47 @@ function renderAudit(rows) {
         + '<option value="300"' + (AUDIT_LIMIT === 300 ? ' selected' : '') + '>最近 300 条</option>'
         + '<option value="1000"' + (AUDIT_LIMIT === 1000 ? ' selected' : '') + '>最近 1000 条</option>'
         + '</select>'
+        + '<select onchange="AUDIT_FILTER=parseInt(this.value,10);openAudit()">'
+        + AUDIT_FILTERS.map(function (f, i) {
+            return '<option value="' + i + '"' + (AUDIT_FILTER === i ? ' selected' : '') + '>' + esc(f.label) + '</option>';
+        }).join('')
+        + '</select>'
         + '<button class="ghost sm" onclick="openAudit()" style="height:30px"><i data-lucide="refresh-cw"></i>刷新</button>'
         + '<button class="ghost sm" onclick="clearAudit()" style="height:30px;color:var(--red,#ff5f56)"><i data-lucide="trash-2"></i>清空</button>'
+        + '<button class="ghost sm" onclick="clearAuditFiltered()" style="height:30px;color:var(--red,#ff5f56)"><i data-lucide="filter-x"></i>清当前类</button>'
         + '</div>' + body + '</div>';
     icons();
+}
+
+/* 设备日志弹窗 (管理员/客户通用): 单设备审计记录, 客户模式 token 认证仅限绑定设备 */
+function openDeviceLog(uuid) {
+    var content = document.getElementById('modalContent');
+    content.innerHTML = '<h3><i data-lucide="scroll-text"></i>设备日志<span class="vars-uuid">' + esc(uuid) + '</span></h3>'
+        + '<div class="modal-body">加载中...</div>';
+    document.getElementById('modalOverlay').style.display = 'flex';
+    icons();
+    var url = '/api/monitor/audit?limit=300&uuid=' + encodeURIComponent(uuid);
+    var hdrs = {};
+    if (ACC_MODE) {
+        url += '&token=' + encodeURIComponent(localStorage.getItem('monitor_token') || '');
+        hdrs['X-CSRF-Token'] = localStorage.getItem('monitor_csrf') || '';
+    } else {
+        url += '&key=' + encodeURIComponent(KEY);
+    }
+    fetch(url, { method: 'GET', headers: hdrs })
+        .then(function (r) {
+            if (r.status === 401 && ACC_MODE) { accExpired(); return null; }
+            return r.json();
+        })
+        .then(function (j) {
+            if (!j) return;
+            if (!j.success) { toast(j.message || '读取失败', false); closeModal(); return; }
+            var rows = j.rows || [];
+            document.getElementById('modalContent').innerHTML = '<h3><i data-lucide="scroll-text"></i>设备日志<span class="vars-uuid">' + esc(uuid) + ' · 共 ' + rows.length + ' 条</span></h3>'
+                + '<div class="modal-body">' + renderAuditRows(rows) + '</div>';
+            icons();
+        })
+        .catch(function () { toast('读取失败, 请重试', false); closeModal(); });
 }
 
 /* 清空审计日志: 二次确认, 成功后重拉列表 (服务端会写入一条"日志清空"留痕) */
@@ -1525,6 +1692,27 @@ function clearAudit() {
             else toast((j && j.message) || '清空失败', false);
         })
         .catch(function () { toast('清空失败, 请重试', false); });
+}
+
+/* 按当前过滤类型清理日志: 过滤为"全部"时提示先选类型; 服务端删除匹配类型行并留痕 */
+function clearAuditFiltered() {
+    var f = AUDIT_FILTERS[AUDIT_FILTER];
+    if (f.qs === '') { toast('先在类型下拉选择要清理的类型', false); return; }
+    var act = f.qs.indexOf('action=') >= 0
+        ? decodeURIComponent(f.qs.split('action=')[1])
+        : decodeURIComponent(f.qs.split('exclude=')[1]);
+    if (!window.confirm('确定清理类型「' + act + '」的全部日志？其他类型保留。')) return;
+    fetch('/api/monitor/audit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: KEY, action: act })
+    })
+        .then(function (r) { return r.json(); })
+        .then(function (j) {
+            if (j && j.success) { toast('已清理 ' + act + ' ' + (j.removed || 0) + ' 条', true); openAudit(); }
+            else toast((j && j.message) || '清理失败', false);
+        })
+        .catch(function () { toast('清理失败, 请重试', false); });
 }
 
 /* 客户修改密码: 旧密码 + 新密码 (8-32 位字母数字, 与旧不同) + 确认;
@@ -1621,7 +1809,7 @@ function setStatus(v, targetUuid) {
     }).then(function (j) {
         if (!j) return;
         if (!j.success) { toast(j.message || '设置失败', false); return; }
-        toast('状态已设为: ' + (j.status === '' ? '正常' : j.status), true);
+        toast(j.status === '' ? '状态已设为: 正常' : '状态已设为: ' + j.status, true);
         refresh();
     }).catch(function () {
         toast('设置失败, 请重试', false);

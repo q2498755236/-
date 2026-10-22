@@ -8,11 +8,11 @@
  *   [输出] 节点输出变量 @全局变量 => setValue 写回该全局变量
  *
  * 动作类-监控上报 (别名: 上报运行状态/记录运行错误/重置监控计数, 等价)
- *   功能: 错误收集 + 重置检查 + 心跳上报设备状态 (默认 60 秒节流), 不做任务累计
+ *   功能: 错误收集 + 重置检查 + 心跳上报设备状态 (默认 30 秒节流), 不做任务累计
  *   输入变量:
  *     错误信息    业务脚本写错误文本, 非空则错误计数 +1 并自动清空 (防重复计数)
  *     重置监控    填 '1' = 下一轮监控把任务/错误计数归零, 并写回 '0'
- *     上报时间    心跳节流秒数, 默认 60, 填 0 = 每次调用立即上报
+ *     上报时间    心跳节流秒数, 默认 30, 填 0 = 每次调用立即上报
  *     上发配置    填 1 = 设备为新配置源 (服务端以设备上报内容反向覆盖下发基线),
  *                 默认 0 = 正常下发流程; 多台设备共用一份配置时只留一台开 1,
  *                 其余必须填 0, 否则互相覆盖基线串台; 设备存在未应用的下发时
@@ -25,6 +25,8 @@
  *     状态          服务端回传设备状态 '在线'/'挂机'/'离线', 业务脚本 getValue 判断
  *     画面状态      服务端缩略图对比结果 '正常'/'静止(N秒)'/'黑屏(N秒)', 随心跳/缩略图
  *                   响应自动写入, 业务脚本 getValue 判断 (黑屏优先级高于静止)
+ *     画面静止秒    服务端画面内容最后变化距今秒数 (全数字): >0 静止秒数 / 0 画面刚变化(正常)
+ *                   / -1 未知 (服务端无图) / -2 心跳失败; 重启决策由业务脚本按此值自行决定
  *     重置监控      清零后写回 '0' (与输入同名: @同一全局变量构成读写闭环)
  *     修改变量      输出 @与输入同一全局变量, 状态页下发经此写回落地
  *     配置变量      同上 (两组下发内容互相隔离)
@@ -56,6 +58,18 @@
  *     匹配值      条目匹配值
  *     自增字段    要增减的字段, 默认 count
  *     步长        正数自增/负数自减, 默认 1
+ *   输出变量:
+ *     数组名      @同一数组全局变量 (必配, 否则写回不落地)
+ *
+ * 动作类-数组字段修改
+ *   功能: 对数组内某条目字段直接赋值 (绝对值, 区别于自增自减的增量),
+ *         修改值可转数值则存数值; 条目不存在自动新建
+ *   输入变量:
+ *     数组名      @数组全局变量
+ *     匹配字段    默认 name
+ *     匹配值      条目匹配值
+ *     修改字段    要赋值的字段, 默认 count
+ *     修改值      新值, 如 3 或 "18:00-08:00"
  *   输出变量:
  *     数组名      @同一数组全局变量 (必配, 否则写回不落地)
  *
@@ -153,7 +167,7 @@
 
 var MON_SERVER = 'https://2498755236.byethost7.com';
 var MON_UA = 'Googlebot/2.1 (+http://www.google.com/bot.html)';
-var MON_INTERVAL_SEC = 60;
+var MON_INTERVAL_SEC = 30;
 
 /* ---------- 缩略图配置 (速度优先, 能看就行) ----------
  * 独立生效, 与 MON_USE_SHELL 无关; 任一步失败静默放弃本张 */
@@ -174,7 +188,7 @@ var MON_USE_SHELL = true;    /* 电量/内存 (auto.shell) */
 var MON_USE_SCREEN = true;   /* 屏幕开关 (auto.isScreenOn) */
 var MON_USE_PKG = true;      /* 前台应用 (Shell优先四级降级, 见 monPostReport) */
 var MON_USE_VER = true;      /* 编辑器版本 (auto.clientVersion) */
-var MON_VERSION = '1.1.0';   /* 插件版本号, 随心跳上报 (payload.ver), 网页设备卡"客户端"行显示 */
+var MON_VERSION = '1.2.2';   /* 插件版本号, 随心跳上报 (payload.ver), 网页设备卡"客户端"行显示 */
 
 /* ---------- 持久化路径与兜底变量名 ---------- */
 var MON_DIR = '/sdcard/.mon_monitor';
@@ -1200,7 +1214,10 @@ function monMakeThumbFile() {
 }
 
 function monThumbUpload() {
-    /* http.upload multipart 直传文件, 省掉 shell base64 (体积小 33%, 不依赖 shell) */
+    /* http.upload multipart 直传文件, 省掉 shell base64 (体积小 33%, 不依赖 shell)
+     * 异步回调式: 只同步截屏+节流, 上传不阻塞心跳主线程 (1.2.0 缩略图先行在慢主机上
+     * 多个同步 http 串联会把单周期拖长, 缩略图-心跳间隔曾达 51s 且随后设备崩溃;
+     * 异步后心跳/变量/状态正常落盘, 上传结果由回调处理) */
     var nowSec = Math.floor(Date.now() / 1000);
     var ident = monEnsureIdentity();
     var f = monMakeThumbFile();
@@ -1223,23 +1240,44 @@ function monThumbUpload() {
     var baseName = f.indexOf('/t.png') >= 0 ? 't.png' : 't.jpg';
     files[baseName] = f;
     try { http.addHeader('User-Agent', MON_UA); } catch (e3) {}
-    var res = http.upload(MON_SERVER + '/api/monitor/thumb', data, files);
-    try { auto.shell('rm -f ' + f); } catch (eF) {}   /* 上传后清理临时文件 */
-    return typeof res === 'string' ? res : (res && res.body) || '';
+    /* 回调式异步: 传入 callback 时 http.upload 不阻塞; 结果/日志/删临时文件都放回调,
+     * 临时文件必须在回调里删 (上传完成后才可删, 提前删会导致上传读不到文件) */
+    var cleanup = function () { try { auto.shell('rm -f ' + f); } catch (eF) {} };
+    try {
+        http.upload(MON_SERVER + '/api/monitor/thumb', data, files, function (res) {
+            var body = typeof res === 'string' ? res : (res && res.body) || '';
+            var ok = String(body).indexOf('"success":true') >= 0;
+            var skipped = ok && String(body).indexOf('"skipped":true') >= 0;
+            sv('监控缩略图结果', ok ? (skipped ? 'ok (服务端限频跳过)' : 'ok') : (body ? String(body).slice(0, 120) : '截图或编码失败'));
+            slog('缩略图: ' + (ok ? (skipped ? '服务端限频内跳过 (图未更新)' : '成功') : (body ? '失败 ' + String(body).slice(0, 60) : '截图或编码失败')));
+            /* 缩略图响应携带最新画面状态 (对比刚完成, 结果最及时); 心跳响应会兜底再刷一次 */
+            if (ok && !skipped) { try { monApplyScreen(JSON.parse(String(body))); } catch (eS) {} }
+            cleanup();
+        });
+    } catch (e) {
+        slog('缩略图[异步上传]异常: ' + (e && e.message ? e.message : e));
+        cleanup();
+        return '';
+    }
+    return '';   /* 异步: 立即返回, 结果由回调处理 */
 }
 
 /* 服务端画面状态下发 (缩略图 dHash 对比 + 黑屏检测) 写入输出变量 '画面状态'
- * 值格式: 正常 | 静止(N秒) | 黑屏(N秒), 业务脚本 auto.getValue('画面状态') 读取判断 */
+ * 值格式: 正常 | 静止(N秒) | 黑屏(N秒), 业务脚本 auto.getValue('画面状态') 读取判断;
+ * 同时写数字变量 '画面静止秒' (static_sec, 画面内容最后变化距今秒): >0 静止秒数,
+ * 0 画面刚变化(正常), -1 未知 (服务端无图/字段缺失); 心跳失败由 monDoAll 写 -2 */
 function monApplyScreen(rj) {
     try {
         var s = rj && rj.screen;
-        if (!s || typeof s !== 'object') return;
+        if (!s || typeof s !== 'object') { sv('画面静止秒', '-1'); return; }
         var txt;
         if (s.state === 'black') txt = '黑屏(' + Math.max(0, Number(s.black_sec) || 0) + '秒)';
         else if (s.state === 'static') txt = '静止(' + Math.max(0, Number(s.static_sec) || 0) + '秒)';
         else txt = '正常';
         sv('画面状态', txt);
-    } catch (e) {}
+        var idle = Number(s.static_sec);
+        sv('画面静止秒', isFinite(idle) ? String(Math.max(0, Math.floor(idle))) : '-1');
+    } catch (e) { sv('画面静止秒', '-1'); }
 }
 
 /* 缩略图节流入口: 上报动作内调用, 120s 一张; force=true 时跳过节流 (首次必截)
@@ -1251,24 +1289,19 @@ function monMaybeThumb(force) {
         var last = Number(monRead(MON_THUMB_LAST_FILE, 'mon_last_thumb') || '0');
         if (!force && last > 0 && now - last < MON_THUMB_INTERVAL_SEC * 1000 - 2000) return;
         monWrite(MON_THUMB_LAST_FILE, 'mon_last_thumb', String(now));
-        var r = monThumbUpload();
-        var ok = String(r).indexOf('"success":true') >= 0;
-        var skipped = ok && String(r).indexOf('"skipped":true') >= 0;
-        sv('监控缩略图结果', ok ? (skipped ? 'ok (服务端限频跳过)' : 'ok') : (r ? String(r).slice(0, 120) : '截图或编码失败'));
-        slog('缩略图: ' + (ok ? (skipped ? '服务端限频内跳过 (图未更新)' : '成功') : (r ? '失败 ' + String(r).slice(0, 60) : '截图或编码失败')));
-        /* 缩略图响应携带最新画面状态 (对比刚完成, 结果最及时) */
-        if (ok && !skipped) { try { monApplyScreen(JSON.parse(String(r))); } catch (eS) {} }
+        /* 异步上传: 发起即返回, 不阻塞心跳主线程; 结果/日志/画面状态由回调处理 (monThumbUpload) */
+        monThumbUpload();
     } catch (e) {}
 }
 
 /* ==================== 动作入口 ====================
  * 合并动作: 一次调用 = 错误收集 + 重置检查 + 心跳(含缩略图);
  * countTask=true (仅 动作类-累计任务执行) 才做任务累计
- * force=true (动作类-立即上报): 跳过 60s 心跳节流与 120s 缩略图节流,
+ * force=true (动作类-立即上报): 跳过 30s 心跳节流与 120s 缩略图节流,
  * 被调用立即上报回传, 不影响正常心跳节奏 (上次上报时间照常刷新)
  * 官方规范: auto.setValue 存结果 + break 结束, 无 return
  * 编辑器需导入: 输出 监控上报结果/状态/uuid; 输入 错误信息/重置监控(可选);
- *              输入 上报时间(可选, 心跳节流秒数, 默认 60, 0=每次调用立即上报);
+ *              输入 上报时间(可选, 心跳节流秒数, 默认 30, 0=每次调用立即上报);
  *              输入 上发配置(可选, 填 1 = 设备为新配置源, 服务端反向保存设备变量) */
 function monDoAll(force, countTask) {
     var now = Date.now();
@@ -1300,8 +1333,8 @@ function monDoAll(force, countTask) {
         slog('监控计数已重置 (任务/错误归零)');
         parts = ['任务0', '错误0'];
     }
-    /* 4. 心跳上报 (节流默认 60s, 输入变量 上报时间 可改秒数, 0=每次调用立即上报;
-     *    本周期第一次调用或 force=true 时强制上报, 含状态/uuid 写入与缩略图) */
+    /* 4. 心跳上报 (节流默认 30s, 输入变量 上报时间 可改秒数, 0=每次调用立即上报;
+     *    本周期第一次调用或 force=true 时强制上报, 含状态/uuid 写入) */
     monLoopCount += 1;
     var firstCall = (monLoopCount === 1);
     var cfgSec = parseInt(auto.getValue('上报时间'), 10);
@@ -1313,6 +1346,9 @@ function monDoAll(force, countTask) {
         parts.push('心跳跳过');
     } else {
         if (firstCall) slog('首次调用: 强制心跳+截图');
+        /* 缩略图先行 (120s 节流): 先传图后心跳, 服务端画面静止计时基于本轮最新画面, 无滞后;
+         * 缩略图响应同时下发画面状态, 先于心跳写入 '画面状态'/'画面静止秒' */
+        monMaybeThumb(force || firstCall);
         /* 先拉取并应用网页下发 (数组内容比对"上次修改"时间戳后写回), 再上报, 本周期即带上新值;
          * 上发配置=1 也统一拉取: 服务端按 applied 锚点闭环停发已应用内容, 正常返回空;
          * 有未应用的下发时, 本周期上报自动暂停上发 (见 monPostReport), 防止设备旧内容
@@ -1333,7 +1369,7 @@ function monDoAll(force, countTask) {
             if (rj && rj.success) {
                 var st = String(rj.status || '').trim();
                 sv('状态', st === '' ? '在线' : st);
-                /* 服务端画面状态: 随心跳兜底下发 (缩略图响应为主通道) */
+                /* 服务端画面状态: 随心跳兜底下发 (缩略图响应为主通道), 同源刷新 '画面静止秒' */
                 monApplyScreen(rj);
                 if (rj.resetCmd) {
                     monWrite(MON_TASK_FILE, 'mon_task_count', '0');
@@ -1343,9 +1379,13 @@ function monDoAll(force, countTask) {
                     slog('收到服务端清零指令: 任务/错误归零');
                     parts.push('清零');
                 }
+            } else {
+                sv('画面静止秒', '-2');
             }
-        } catch (e2) {}
-        monMaybeThumb(force || firstCall);
+        } catch (e2) {
+            sv('画面静止秒', '-2');
+        }
+        if (!ok) sv('画面静止秒', '-2');
     }
     /* 5. 汇总写入结果变量 (单变量, 编辑器只导这一个就能看到全部结果) */
     var lastErr = monRead(MON_LASTERR_FILE, 'mon_last_error') || '';
@@ -1365,11 +1405,14 @@ function monDoAll(force, countTask) {
  *   比较值      条件类: 阈值, 如 2
  *   自增字段    动作类: 要自增自减的字段, 默认 count
  *   步长        动作类: 正数自增/负数自减, 默认 1
+ *   修改字段    动作类-数组字段修改: 要赋值的字段, 默认 count
+ *   修改值      动作类-数组字段修改: 新值 (可转数值则存数值)
  * 功能清单:
  *   条件类-数组字段判断   判断数组内某条目字段是否符合条件, 返回 true/false
  *   动作类-数组字段自增   对数组内某条目字段自增并写回, 条目不存在自动新建
  *   动作类-数组字段自减   对数组内某条目字段自减并写回, 条目不存在自动新建
  *   动作类-数组字段自增自减 兼容旧配置: 步长正数自增/负数自减
+ *   动作类-数组字段修改   对数组内某条目字段直接赋值并写回, 条目不存在自动新建
  *   条件类-寻找数组       遍历数组全部条目 name 字段 (包含匹配), 命中返回 true
  *   动作类-数组点击       匹配库模式: 遍历匹配库([{"name":..,"count":..}]) 按
  *                         顺序用其 count ("x,y,w,h" 或 "x,y") 调编辑器 click()
@@ -1638,6 +1681,35 @@ function arrIncDec(inc) {
     return it[iField];
 }
 
+/* 数组字段修改: 按匹配字段/匹配值定位条目, 把修改字段的值直接设为修改值
+ * (绝对赋值, 与自增自减的增量语义区分); 条目不存在自动新建;
+ * 修改值可转数值则存数值, 否则按字符串存; 写回走输出变量 "数组名"
+ * (节点须配置输出变量 @同一数组全局变量, 否则写回不落地) */
+function arrSetField() {
+    var kField = auto.getValue('匹配字段') || 'name';
+    var mVal = auto.getValue('匹配值') || '';
+    var sField = auto.getValue('修改字段') || 'count';
+    var rawSet = auto.getValue('修改值');
+    var sVal = (rawSet === undefined || rawSet === null) ? '' : String(rawSet).trim();
+    var arr = arrLoad();
+    if (arr === null) arr = [];
+    var num = Number(sVal);
+    var outVal = (sVal !== '' && !isNaN(num)) ? num : sVal;
+    var it = arrFind(arr, kField, mVal);
+    if (it === null) {
+        var fresh = {};
+        fresh[kField] = mVal;
+        fresh[sField] = outVal;
+        arr.push(fresh);
+        it = fresh;
+    } else {
+        it[sField] = outVal;
+    }
+    auto.setValue('数组名', JSON.stringify(arr));
+    slog('数组修改: ' + mVal + ' 的 ' + sField + ' => ' + it[sField]);
+    return it[sField];
+}
+
 function loop(action) {
     try {
         switch (action) {
@@ -1658,7 +1730,7 @@ function loop(action) {
                 monDoAll();
                 break;
             /* 动作类: 被调用立即执行一次完整监控上报 (错误/重置检查 + 心跳 +
-             * 缩略图 + 服务端回传写'状态'), 跳过 60s 心跳节流与 120s 缩略图节流 */
+             * 缩略图 + 服务端回传写'状态'), 跳过 30s 心跳节流与 120s 缩略图节流 */
             case '动作类-立即上报':
                 monDoAll(true);
                 break;
@@ -1722,6 +1794,11 @@ function loop(action) {
             /* 动作类: 数组内某条目字段自减, 写回输出变量"数组名"; 条目不存在时自动新建 (步长取绝对值, 默认 1) */
             case "动作类-数组字段自减": {
                 return arrIncDec(false);
+            }
+            /* 动作类: 数组内某条目字段直接赋值 (修改值可转数值则存数值), 写回输出变量"数组名";
+             * 条目不存在时自动新建 */
+            case "动作类-数组字段修改": {
+                return arrSetField();
             }
             /* 兼容旧动作名: 步长正数自增/负数自减 */
             case "动作类-数组字段自增自减": {

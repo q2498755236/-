@@ -23,6 +23,7 @@ $CFG = array(
     'RATE_LIMIT_API'      => 10,
     'RATE_LIMIT_ADMIN'    => 10,
     'BACKUP_KEEP'         => 10,
+    'MON_DRIFT_RESEND_SEC' => 1800,
     'MAX_NONCE_CACHE'     => 50000,
     'MAX_SALT_CACHE'      => 50000,
     'MAX_TOKEN_CACHE'     => 50000,
@@ -73,6 +74,12 @@ register_shutdown_function(function () {
         jsonInternalError('服务器内部错误');
     }
 });
+
+/* ==================== 时区 ==================== */
+/* 全站时间统一北京时间: 审计日志/备份文件名带 +08:00 offset, "上次修改"时间戳(date)随之对齐;
+ * 设备端闭环不受影响——时间戳由服务端生成、设备原样带回, 字符串同源比对;
+ * 历史审计行为 UTC 的 Z 格式, 前端 new Date() 对两种格式均按 offset 正确解析 */
+date_default_timezone_set('Asia/Shanghai');
 
 /* ==================== 数据目录 ==================== */
 /* 优先放在站点根(htdocs)之外，避免被 HTTP 直接下载；不可写时回退到站内并依赖 .htaccess 拒绝访问 */
@@ -140,7 +147,7 @@ function maskId($id) {
 }
 function auditLog($action, $detail) {
     global $LOG_DIR;
-    $ts = gmdate('Y-m-d\TH:i:s.v\Z');
+    $ts = date('Y-m-d\TH:i:s.vP');   /* 北京时间 +08:00 offset (历史行为 UTC Z 格式, 前端均正确解析) */
     @file_put_contents($LOG_DIR . '/audit.log',
         '[' . $ts . '] [INFO] [AUDIT] ' . $action . ' ' . json_encode($detail, JSON_UNESCAPED_UNICODE) . "\n", FILE_APPEND | LOCK_EX);
 }
@@ -243,6 +250,18 @@ function dbAcc() {
     $__rV = $__accDb->query("SELECT 1 FROM information_schema.COLUMNS
         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'monitor_vars' AND COLUMN_NAME = 'config_var'");
     if ($__rV && !$__rV->fetch_assoc()) $__accDb->query("ALTER TABLE monitor_vars ADD COLUMN config_var MEDIUMTEXT NOT NULL AFTER config_var_dev");
+    /* 备用项草稿列 (26-10-03): 仅网页编辑用, 随条目存 backup1/backup2 字段数组 JSON;
+     * 与下发内容 (edit_var/config_var) 完全隔离, 设备拉取不携带, 闭环/审计不受影响 */
+    $__rV = $__accDb->query("SELECT 1 FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'monitor_vars' AND COLUMN_NAME = 'edit_backup'");
+    if ($__rV && !$__rV->fetch_assoc()) $__accDb->query("ALTER TABLE monitor_vars ADD COLUMN edit_backup MEDIUMTEXT NOT NULL AFTER config_var");
+    $__rV = $__accDb->query("SELECT 1 FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'monitor_vars' AND COLUMN_NAME = 'config_backup'");
+    if ($__rV && !$__rV->fetch_assoc()) $__accDb->query("ALTER TABLE monitor_vars ADD COLUMN config_backup MEDIUMTEXT NOT NULL AFTER edit_backup");
+    /* 配置漂移自愈限频列 (26-10-18): 上次自动重发基线时间戳的时刻, 0=未触发过 */
+    $__rV = $__accDb->query("SELECT 1 FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'monitor_vars' AND COLUMN_NAME = 'resend_ms'");
+    if ($__rV && !$__rV->fetch_assoc()) $__accDb->query("ALTER TABLE monitor_vars ADD COLUMN resend_ms BIGINT NOT NULL DEFAULT 0 AFTER updated_ms");
     return $__accDb;
 }
 
@@ -311,6 +330,7 @@ function dbInitSchema() {
         'editor_ver'     => "ALTER TABLE client_status ADD COLUMN editor_ver VARCHAR(40) NOT NULL DEFAULT ''",
         'uuid'           => "ALTER TABLE client_status ADD COLUMN uuid VARCHAR(32) NOT NULL DEFAULT ''",
         'status'         => "ALTER TABLE client_status ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT ''",
+        'status_ms'      => "ALTER TABLE client_status ADD COLUMN status_ms BIGINT NOT NULL DEFAULT 0",
         'gold'           => "ALTER TABLE client_status ADD COLUMN gold BIGINT NOT NULL DEFAULT 0",
         'hp'             => "ALTER TABLE client_status ADD COLUMN hp BIGINT NOT NULL DEFAULT 0",
         'floor'          => "ALTER TABLE client_status ADD COLUMN floor INT NOT NULL DEFAULT 0",
@@ -839,7 +859,7 @@ function backupData() {
     $cards = getCards();
     if (!$cards) return;
     if (!is_dir($BACKUP_DIR)) @mkdir($BACKUP_DIR, 0755, true);
-    $ts = gmdate('Y-m-d\TH-i-s.v\Z');
+    $ts = date('Y-m-d\TH-i-s.vP');   /* 备份文件名北京时间; 同格式字典序排序逻辑不变 */
     @file_put_contents($BACKUP_DIR . '/cards-' . $ts . '.json', json_encode($cards, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT));
     $backups = glob($BACKUP_DIR . '/cards-*.json');
     if ($backups && count($backups) > $CFG['BACKUP_KEEP']) {
@@ -1321,28 +1341,55 @@ function handleMonitorReport($body) {
         if ($dv !== null && strlen($vv) <= 65536 && strlen($dv) <= 65536) {
             $cvd = isset($body['configVarDev']) && is_string($body['configVarDev']) ? strval($body['configVarDev']) : '';
             if ($upCfg) {
-                $stV = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, updated_ms) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE view_var = VALUES(view_var), edit_var_dev = VALUES(edit_var_dev), edit_var = VALUES(edit_var), updated_ms = VALUES(updated_ms)");
+                /* 覆盖前比对"上次修改": 设备上发早于基线 => 设备尚未应用最新下发, 覆盖会丢失待下发内容 */
+                $editCover = true;
+                $stOldE = dbAcc()->prepare("SELECT edit_var FROM monitor_vars WHERE uuid = ?");
+                if ($stOldE) {
+                    $stOldE->bind_param('s', $repUuid);
+                    $stOldE->execute();
+                    $oldRowE = $stOldE->get_result()->fetch_assoc();
+                    $stOldE->close();
+                    $editCover = monUploadAllowCover($dv, strval(isset($oldRowE['edit_var']) ? $oldRowE['edit_var'] : ''));
+                }
+                if ($editCover) {
+                /* 上发覆盖也必须补"上次修改" (26-10-19): 设备数组被业务脚本重写会冲掉该条目,
+                 * 原样覆盖进基线 => 设备端 stampKey 为空 => 永不写 applied 锚点 => 闭环死锁 (7F4A/92B4);
+                 * 镜像列仍存设备原文, 仅基线副本补 */
+                $dvBase = monEnsureStamp($dv);
+                $stV = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE view_var = VALUES(view_var), edit_var_dev = VALUES(edit_var_dev), edit_var = VALUES(edit_var), updated_ms = VALUES(updated_ms)");
                 if ($stV) {
-                    $stV->bind_param('ssssssi', $repUuid, $vv, $dv, $dv, $cvd, $empty, $nowV);
+                    $stV->bind_param('ssssssssi', $repUuid, $vv, $dv, $dvBase, $cvd, $empty, $empty, $empty, $nowV);
                     $stV->execute();
                     $stV->close();
                     /* 上发生效审计: 设备内容已反向覆盖下发基线; 摘要一行可读, 完整 JSON 快照限长 2000 供网页展开查看 */
                     auditLog('配置上发', array('device' => maskId($repUuid), 'by' => '设备', 'editLen' => strlen($dv), 'cfgLen' => strlen($cvd),
                         'cfg' => monVarsDigest($cvd), 'edit' => monVarsDigest($dv),
                         'cfgContent' => utf8Truncate($cvd, 2000), 'editContent' => utf8Truncate($dv, 2000)));
+                    $upCfgAudited = true;   /* edit+config 同发时只记一次, config 覆盖分支据此跳过 */
+                }
+                } else {
+                    /* 保护性跳过: 仅更新 dev 镜像列, 下发基线保留, 留审计供网页排查 */
+                    $stV = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE view_var = VALUES(view_var), edit_var_dev = VALUES(edit_var_dev), updated_ms = VALUES(updated_ms)");
+                    if ($stV) {
+                        $stV->bind_param('ssssssssi', $repUuid, $vv, $dv, $empty, $cvd, $empty, $empty, $empty, $nowV);
+                        $stV->execute();
+                        $stV->close();
+                    }
+                    auditLog('上发跳过', array('device' => maskId($repUuid), 'by' => '设备', 'editLen' => strlen($dv),
+                        'devStamp' => monStampOf($dv), 'reason' => '修改变量上发早于下发基线, 设备未应用最新下发'));
                 }
             } else {
-                $stV = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, updated_ms) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE view_var = VALUES(view_var), edit_var_dev = VALUES(edit_var_dev), updated_ms = VALUES(updated_ms)");
+                $stV = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE view_var = VALUES(view_var), edit_var_dev = VALUES(edit_var_dev), updated_ms = VALUES(updated_ms)");
                 if ($stV) {
-                    $stV->bind_param('ssssssi', $repUuid, $vv, $dv, $empty, $cvd, $empty, $nowV);
+                    $stV->bind_param('ssssssssi', $repUuid, $vv, $dv, $empty, $cvd, $empty, $empty, $empty, $nowV);
                     $stV->execute();
                     $stV->close();
                 }
             }
         } elseif ($dv === null && strlen($vv) <= 65536) {
-            $stV = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, updated_ms) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE view_var = VALUES(view_var), updated_ms = VALUES(updated_ms)");
+            $stV = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE view_var = VALUES(view_var), updated_ms = VALUES(updated_ms)");
             if ($stV) {
-                $stV->bind_param('ssssssi', $repUuid, $vv, $empty, $empty, $empty, $empty, $nowV);
+                $stV->bind_param('ssssssssi', $repUuid, $vv, $empty, $empty, $empty, $empty, $empty, $empty, $nowV);
                 $stV->execute();
                 $stV->close();
             }
@@ -1355,23 +1402,55 @@ function handleMonitorReport($body) {
         $nowC = nowMs();
         $emptyC = '';
         if ($upCfg) {
-            $stC = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, updated_ms) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE config_var_dev = VALUES(config_var_dev), config_var = VALUES(config_var), updated_ms = VALUES(updated_ms)");
+            /* 覆盖前比对"上次修改": 设备上发早于基线 => 设备尚未应用最新下发, 覆盖会丢失待下发内容 */
+            $cfgCover = true;
+            $stOldC = dbAcc()->prepare("SELECT config_var FROM monitor_vars WHERE uuid = ?");
+            if ($stOldC) {
+                $stOldC->bind_param('s', $repUuid);
+                $stOldC->execute();
+                $oldRowC = $stOldC->get_result()->fetch_assoc();
+                $stOldC->close();
+                $cfgCover = monUploadAllowCover($cv, strval(isset($oldRowC['config_var']) ? $oldRowC['config_var'] : ''));
+            }
+            if ($cfgCover) {
+            /* 同 edit 通道: 基线副本补"上次修改", 镜像列存设备原文, 防无时间戳闭环死锁 (26-10-19) */
+            $cvBase = monEnsureStamp($cv);
+            $stC = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE config_var_dev = VALUES(config_var_dev), config_var = VALUES(config_var), updated_ms = VALUES(updated_ms)");
             if ($stC) {
-                $stC->bind_param('ssssssi', $repUuid, $emptyC, $emptyC, $emptyC, $cv, $cv, $nowC);
+                $stC->bind_param('ssssssssi', $repUuid, $emptyC, $emptyC, $emptyC, $cv, $cvBase, $emptyC, $emptyC, $nowC);
                 $stC->execute();
                 $stC->close();
+            }
+            if (empty($upCfgAudited)) {
+                /* config 单独上发覆盖成功也留审计 (edit 分支已记过则跳过防重复) */
+                auditLog('配置上发', array('device' => maskId($repUuid), 'by' => '设备', 'editLen' => 0, 'cfgLen' => strlen($cv),
+                    'cfg' => monVarsDigest($cv), 'edit' => '',
+                    'cfgContent' => utf8Truncate($cv, 2000), 'editContent' => ''));
+            }
+            } else {
+                /* 保护性跳过: 仅更新 dev 镜像列, 下发基线保留, 留审计供网页排查 */
+                $stC = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE config_var_dev = VALUES(config_var_dev), updated_ms = VALUES(updated_ms)");
+                if ($stC) {
+                    $stC->bind_param('ssssssssi', $repUuid, $emptyC, $emptyC, $emptyC, $cv, $emptyC, $emptyC, $emptyC, $nowC);
+                    $stC->execute();
+                    $stC->close();
+                }
+                auditLog('上发跳过', array('device' => maskId($repUuid), 'by' => '设备', 'cfgLen' => strlen($cv),
+                    'devStamp' => monStampOf($cv), 'reason' => '配置变量上发早于下发基线, 设备未应用最新下发'));
             }
         } else {
-            $stC = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, updated_ms) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE config_var_dev = VALUES(config_var_dev), updated_ms = VALUES(updated_ms)");
+            $stC = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE config_var_dev = VALUES(config_var_dev), updated_ms = VALUES(updated_ms)");
             if ($stC) {
-                $stC->bind_param('ssssssi', $repUuid, $emptyC, $emptyC, $emptyC, $cv, $emptyC, $nowC);
+                $stC->bind_param('ssssssssi', $repUuid, $emptyC, $emptyC, $emptyC, $cv, $emptyC, $emptyC, $emptyC, $nowC);
                 $stC->execute();
                 $stC->close();
             }
+            /* 漂移自愈: 镜像已更新, 检测设备值与基线语义分歧且超时未收敛则自动重发基线 */
+            monDriftResend($repUuid, $cv);
         }
     }
     /* 状态由客户在网页设置, report 仅回传, upsert 不覆盖 */
-    $st = db()->prepare("SELECT status, reset_cmd FROM client_status WHERE device_id = ?");
+    $st = db()->prepare("SELECT status, status_ms, reset_cmd FROM client_status WHERE device_id = ?");
     $st->bind_param('s', $deviceId);
     $st->execute();
     $row = $st->get_result()->fetch_assoc();
@@ -1379,7 +1458,7 @@ function handleMonitorReport($body) {
     /* 清零指令: 置位后随下一次心跳下发, 下发即消费清零 (设备端收到后归零本地计数, 下次心跳上报 0) */
     $resetCmd = !empty($row['reset_cmd']);
     if ($resetCmd) dbExec("UPDATE client_status SET reset_cmd = 0 WHERE device_id = ?", array($deviceId));
-    respond(array('success' => true, 'timestamp' => intval($now / 1000), 'status' => strval($row['status']), 'resetCmd' => $resetCmd, 'screen' => monScreenInfo($repUuid, nowSec())));
+    respond(array('success' => true, 'timestamp' => intval($now / 1000), 'status' => strval(isset($row['status']) ? $row['status'] : ''), 'resetCmd' => $resetCmd, 'screen' => monScreenInfo($repUuid, nowSec())));
 }
 
 /* 管理端: 下发任务/错误计数清零指令 (全部设备置位 reset_cmd, 设备心跳领取后本地归零并回传 0) */
@@ -1693,31 +1772,58 @@ function handleMonitorThumb($body) {
 /* 在线判定阈值: 60 秒心跳, 2.5 个周期无心跳判离线 */
 define('MONITOR_ONLINE_MS', 150000);
 
-/* 审计日志查询 (仅管理员): GET /api/monitor/audit?key=...&limit=N
- * 从 audit.log 尾部高效读取 N 行, 解析为 {ts, action, detail} 倒序返回 */
+/* 审计日志查询 (管理员 key 全量 / 客户 token 仅绑定设备): GET /api/monitor/audit?key=... 或 &token=...
+ *   &limit=N          条数 (默认 300, 上限 2000)
+ *   &uuid=X           单设备过滤 (客户模式须为绑定设备, 否则 403)
+ *   &action=a,b       只含指定类型 (逗号分隔, 精确匹配)
+ *   &exclude=a,b      排除指定类型 (如 exclude=下发确认)
+ * 从 audit.log 尾部高效读取, 解析为 {ts, action, detail} 倒序返回;
+ * 过滤嵌入读取循环: 读满过滤后的 limit 条才停 (scanned 上限防超大文件全扫);
+ * 客户模式按 detail.device 掩码 (maskId) 匹配绑定设备集, 无 device 字段的行跳过 */
 function handleMonitorAudit($query) {
     global $LOG_DIR;
     if (adminFailCheck(clientIp())) respond(array('success' => false, 'message' => '失败次数过多, IP 已被暂时封禁'), 429);
-    if (!monitorAuth(strval(isset($query['key']) ? $query['key'] : ''))) {
-        adminFail(clientIp());
-        respond(array('success' => false, 'message' => '密钥错误'), 401);
+    $tk = preg_replace('/[^0-9a-f]/', '', strval(isset($query['token']) ? $query['token'] : ''));
+    $devMask = '';       /* 单设备掩码过滤 (uuid 参数) */
+    $devAllow = null;    /* null=管理员全量; array=客户绑定设备掩码集 */
+    if ($tk !== '') {
+        /* 客户模式: token 登录, 仅看绑定设备日志 (uuid 参数须在绑定集内) */
+        $userId = monTokenCheck($tk);
+        if (!$userId) respond(array('success' => false, 'message' => '登录已过期, 请重新登录'), 401);
+        $uuids = monUserUuids($userId);
+        $devAllow = array();
+        foreach ($uuids as $u) $devAllow[] = maskId($u);
+        $uq = strtoupper(preg_replace('/[^0-9A-Fa-f\-]/', '', strval(isset($query['uuid']) ? $query['uuid'] : '')));
+        if ($uq !== '') {
+            if (!in_array($uq, $uuids)) respond(array('success' => false, 'message' => '该设备未绑定在此账号下'), 403);
+            $devMask = maskId($uq);
+        }
+    } else {
+        if (!monitorAuth(strval(isset($query['key']) ? $query['key'] : ''))) {
+            adminFail(clientIp());
+            respond(array('success' => false, 'message' => '密钥错误'), 401);
+        }
+        adminFailClear(clientIp());
+        $uq = strtoupper(preg_replace('/[^0-9A-Fa-f\-]/', '', strval(isset($query['uuid']) ? $query['uuid'] : '')));
+        if ($uq !== '') $devMask = maskId($uq);
     }
-    adminFailClear(clientIp());
     $limit = intval(isset($query['limit']) ? $query['limit'] : 300);
     if ($limit < 1) $limit = 300;
     if ($limit > 2000) $limit = 2000;
+    $actIn = array_values(array_filter(array_map('trim', explode(',', strval(isset($query['action']) ? $query['action'] : '')))));
+    $actEx = array_values(array_filter(array_map('trim', explode(',', strval(isset($query['exclude']) ? $query['exclude'] : '')))));
     $file = $LOG_DIR . '/audit.log';
     $rows = array();
     if (is_file($file)) {
         /* 从文件末尾按块向前读, 行按 新->旧 收集, 取满 limit 即停 (日志可能乱序交错, 以文件物理顺序为准) */
-        $lines = array();
         $fh = @fopen($file, 'rb');
         if ($fh) {
             fseek($fh, 0, SEEK_END);
             $size = ftell($fh);
             $chunk = 65536;
             $tail = '';
-            while ($size > 0 && count($lines) < $limit + 2) {
+            $scanned = 0;
+            while ($size > 0 && count($rows) < $limit && $scanned < 200000) {
                 $read = min($chunk, $size);
                 $size -= $read;
                 fseek($fh, $size);
@@ -1725,22 +1831,30 @@ function handleMonitorAudit($query) {
                 /* 块尾的不完整行(前一块的开头)是 explode 的最后一个元素, 用 array_pop 挂起;
                  * array_shift 会把首行当 tail 丢弃, 日志行数少时(如清空后仅剩留痕)整条读不出来 */
                 $tail = array_pop($parts);
-                $lines = array_merge(array_reverse($parts), $lines);
+                foreach (array_reverse($parts) as $line) {
+                    $line = trim($line);
+                    if ($line === '') continue;
+                    $scanned++;
+                    if (!preg_match('/^\[([^\]]+)\] \[[^\]]+\] \[AUDIT\] (\S+) (.*)$/', $line, $m)) continue;
+                    $act = $m[2];
+                    if (count($actIn) > 0 && !in_array($act, $actIn)) continue;
+                    if (count($actEx) > 0 && in_array($act, $actEx)) continue;
+                    $d = json_decode($m[3], true);
+                    if (!is_array($d)) $d = array('raw' => $m[3]);
+                    /* 设备归属过滤: 单设备 (uuid 参数) 或客户绑定集; 无 device 字段的行对客户不可见 */
+                    if ($devMask !== '' && strval(isset($d['device']) ? $d['device'] : '') !== $devMask) continue;
+                    if (is_array($devAllow) && !in_array(strval(isset($d['device']) ? $d['device'] : ''), $devAllow)) continue;
+                    $rows[] = array('ts' => $m[1], 'action' => $act, 'detail' => $d);
+                    if (count($rows) >= $limit) break;
+                }
             }
             fclose($fh);
-        }
-        foreach ($lines as $line) {
-            if (count($rows) >= $limit) break;
-            $line = trim($line);
-            if ($line === '') continue;
-            if (!preg_match('/^\[([^\]]+)\] \[[^\]]+\] \[AUDIT\] (\S+) (.*)$/', $line, $m)) continue;
-            $d = json_decode($m[3], true);
-            $rows[] = array('ts' => $m[1], 'action' => $m[2], 'detail' => is_array($d) ? $d : array('raw' => $m[3]));
         }
     }
     respond(array('success' => true, 'rows' => $rows, 'total' => count($rows)));
 }
-/* 清空审计日志: 仅管理员; 覆盖写空内容保留文件本身, 清空动作本身留痕 ("日志清空"条目) */
+/* 清空审计日志: 仅管理员; 覆盖写空内容保留文件本身, 清空动作本身留痕 ("日志清空"条目);
+ * body 带 action 时只清理指定类型 (逗号分隔多值), 其余类型保留, 留痕 "日志清理" 记录删除条数 */
 function handleMonitorAuditClear($body) {
     global $LOG_DIR;
     if (adminFailCheck(clientIp())) respond(array('success' => false, 'message' => '失败次数过多, IP 已被暂时封禁'), 429);
@@ -1750,13 +1864,35 @@ function handleMonitorAuditClear($body) {
     }
     adminFailClear(clientIp());
     $file = $LOG_DIR . '/audit.log';
-    /* file_put_contents 写空内容成功时返回 0, 须用 !== false 判断 (0 是合法成功值) */
-    $ok = @file_put_contents($file, '', LOCK_EX);
-    if ($ok === false) {
-        respond(array('success' => false, 'message' => '清空失败, 请重试'), 500);
+    $actFilter = array_values(array_filter(array_map('trim', explode(',', strval(isset($body['action']) ? $body['action'] : '')))));
+    if (count($actFilter) === 0) {
+        /* file_put_contents 写空内容成功时返回 0, 须用 !== false 判断 (0 是合法成功值) */
+        $ok = @file_put_contents($file, '', LOCK_EX);
+        if ($ok === false) {
+            respond(array('success' => false, 'message' => '清空失败, 请重试'), 500);
+        }
+        auditLog('日志清空', array('by' => '管理员'));
+        respond(array('success' => true));
     }
-    auditLog('日志清空', array('by' => '管理员'));
-    respond(array('success' => true));
+    /* 按类型清理: 全量读入, 保留 action 不在过滤集的行, 原子覆盖写回 */
+    $removed = 0;
+    $keep = array();
+    $lines = @file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    if (is_array($lines)) {
+        foreach ($lines as $line) {
+            if (preg_match('/^\[([^\]]+)\] \[[^\]]+\] \[AUDIT\] (\S+) /', $line, $m) && in_array($m[2], $actFilter)) {
+                $removed++;
+                continue;
+            }
+            $keep[] = $line;
+        }
+    }
+    $ok = @file_put_contents($file, implode("\n", $keep) . (count($keep) > 0 ? "\n" : ''), LOCK_EX);
+    if ($ok === false) {
+        respond(array('success' => false, 'message' => '清理失败, 请重试'), 500);
+    }
+    auditLog('日志清理', array('by' => '管理员', 'types' => implode(',', $actFilter), 'removed' => $removed));
+    respond(array('success' => true, 'removed' => $removed));
 }
 
 function handleMonitorList($query) {
@@ -2352,6 +2488,8 @@ function handleMonuDevices($query) {
 
 /* 客户设置设备状态: uuid 即凭证, status ∈ 挂机/离线/在线 (在线存空串)
  * 管理员模式: 携带监控密钥 key 时, 可用 deviceId 或 uuid 定位并修改任意设备 */
+/* 客户标记的设备状态 (挂机/离线) 原样返回, 持久保留直到客户手动改回 (26-10-22: 已删除 10 小时自动过期重置) */
+
 function handleMonitorSetStatus($body) {
     $status = strval(isset($body['status']) ? $body['status'] : '');
     if ($status === '在线') $status = '';
@@ -2408,9 +2546,11 @@ function handleMonitorSetStatus($body) {
     $exists = $chk->get_result()->fetch_assoc();
     $chk->close();
     if (!$exists) respond(array('success' => false, 'message' => '未找到该设备'), 404);
-    $st = db()->prepare("UPDATE client_status SET status = ? WHERE " . $where);
+    /* 挂机/离线标记带时间戳, 供读取处惰性 10 小时过期 (恢复正常清零) */
+    $ms = $status === '' ? 0 : nowMs();
+    $st = db()->prepare("UPDATE client_status SET status = ?, status_ms = ? WHERE " . $where);
     if (!$st) respond(array('success' => false, 'message' => '设置失败'), 500);
-    $st->bind_param('ss', $status, $keyVal);
+    $st->bind_param('sis', $status, $ms, $keyVal);
     $st->execute();
     $st->close();
     auditLog('状态修改', array('device' => maskId($keyVal), 'status' => $status === '' ? '在线' : $status,
@@ -2477,7 +2617,7 @@ function monVarsAuth($body, $write) {
 }
 
 function monVarsLoad($uuid) {
-    $st = dbAcc()->prepare("SELECT view_var, edit_var_dev, edit_var, config_var_dev, config_var, updated_ms FROM monitor_vars WHERE uuid = ?");
+    $st = dbAcc()->prepare("SELECT view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms FROM monitor_vars WHERE uuid = ?");
     if (!$st) return null;
     $st->bind_param('s', $uuid);
     $st->execute();
@@ -2497,6 +2637,19 @@ function monStampOf($content) {
         }
     }
     return '';
+}
+
+/* 上发基线覆盖判定 (uploadCfg=1 时反向覆盖下发基线前的保护):
+ * 设备上发内容"上次修改"早于服务端基线 => 设备尚未应用最新下发 (离线/应用失败/业务脚本模板重写),
+ * 此刻覆盖会把待下发的新内容冲掉且无任何痕迹 (未应用越久越必丢);
+ * 时间戳由服务端 saveVars 生成, 设备原样带回, 字符串比较即时间比较 (格式固定 字典序=时间序);
+ * 返回 true=允许覆盖 */
+function monUploadAllowCover($devContent, $baseContent) {
+    $devStamp = monStampOf($devContent);
+    if ($devStamp === '') return true;    /* 非数组/无时间戳: 保持原逻辑兼容 */
+    $baseStamp = monStampOf($baseContent);
+    if ($baseStamp === '') return true;   /* 基线无时间戳 (首次导入/空基线): 覆盖 */
+    return strcmp($devStamp, $baseStamp) >= 0;
 }
 
 /* 变量内容摘要 (审计用): 数组按 "name=count; ..." 压缩, 非数组/解析失败退化为原文截断;
@@ -2555,7 +2708,20 @@ function monVarsDiff($old, $new, $maxItems = 15) {
     return implode('; ', $parts);
 }
 
+/* 镜像与基线等价判定 (镜像兜底用): 0=不等, 1=字面相等, 2=语义相等;
+ * 语义相等 = 两侧均为数组 JSON 且去"上次修改"章后逐字段一致 (monVarsDiff, 顺序无关);
+ * 设备镜像为业务脚本重写后的 pretty JSON 且常缺时间戳章, 字面比较必然失败, 需语义退化 (26-10-22) */
+function monVarsMirrorEq($dev, $base) {
+    $dev = strval($dev);
+    $base = strval($base);
+    if ($dev === '') return 0;
+    if ($dev === $base) return 1;
+    if (!is_array(json_decode($dev, true)) || !is_array(json_decode($base, true))) return 0;
+    return monVarsDiff($dev, $base) === '' ? 2 : 0;
+}
+
 function handleMonitorVars($body) {
+    global $LOG_DIR;   /* ack 锚点文件依赖; 曾漏声明导致去噪失效 (拼成根路径 /ack_*.json 读写全败), 每轮心跳刷一条"下发确认" */
     if (!rateLimit(clientIp(), 60)) respond(array('success' => false, 'message' => '请求过于频繁'));
     $uuid = monVarsAuth($body, false);
     $row = monVarsLoad($uuid);
@@ -2567,8 +2733,37 @@ function handleMonitorVars($body) {
     $cfgAck = strval(isset($body['configAck']) ? $body['configAck'] : '');
     $editOut = strval($row ? $row['edit_var'] : '');
     $cfgOut = strval($row ? $row['config_var'] : '');
+    /* 存量基线自愈 (26-10-19): 数组内容缺"上次修改" => 设备端 stampKey 为空 => 永不写 applied 锚点
+     * => 本组永远无法停发 (历史 uploadCfg 覆盖写入未补时间戳造成, 见 report 覆盖分支);
+     * 下发前现场补并回写库, 一次修复后闭环恢复正常 */
+    $fixArr = function ($content) {
+        $s = strval($content);
+        if (trim($s) === '' || monStampOf($s) !== '') return $s;   /* 空/非数组/已有时间戳: 不动 */
+        $arr = json_decode($s, true);
+        if (!is_array($arr)) return $s;                            /* 非数组走内容哈希闭环, 不需要 */
+        return monEnsureStamp($s);
+    };
+    $eFix = $fixArr($editOut);
+    $cFix = $fixArr($cfgOut);
+    if ($eFix !== $editOut || $cFix !== $cfgOut) {
+        $stFix = dbAcc()->prepare("UPDATE monitor_vars SET edit_var = ?, config_var = ? WHERE uuid = ?");
+        if ($stFix) {
+            $stFix->bind_param('sss', $eFix, $cFix, $uuid);
+            $stFix->execute();
+            $stFix->close();
+        }
+        auditLog('基线补时间戳', array('device' => maskId($uuid), 'by' => '系统',
+            'edit' => $eFix !== $editOut ? 1 : 0, 'config' => $cFix !== $cfgOut ? 1 : 0,
+            'reason' => '数组基线缺"上次修改"条目, 设备端无法回传 ack 导致永久重发, 已补时间戳恢复闭环'));
+        $editOut = $eFix;
+        $cfgOut = $cFix;
+    }
     $editStopped = false;
     $cfgStopped = false;
+    $editMirrorStopped = false;
+    $cfgMirrorStopped = false;
+    $editMirrorSem = false;
+    $cfgMirrorSem = false;
     if ($editOut !== '' && $editAck !== '' &&
         (monStampOf($editOut) === $editAck || hash('sha256', $editOut) === $editAck)) {
         $editOut = '';
@@ -2579,6 +2774,26 @@ function handleMonitorVars($body) {
         $cfgOut = '';
         $cfgStopped = true;
     }
+    /* 镜像兜底 (26-10-19): ack 不匹配但设备上报镜像已与基线内容完全一致 => 设备实际已拥有该内容,
+     * 视为已应用停发。兜底设备端 applied 锚点丢失/写不进 (7F4A) 或本地回滚后锚点仍命中原内容
+     * 导致"永远跳过、服务端永远重发"的死循环 (92B4 类);
+     * 26-10-22 扩展: 设备镜像为业务脚本重写后的 pretty JSON 且常缺"上次修改"章, 与紧凑基线字面永不
+     * 相等 (7F4A/92B4 线上取证), 故增加语义相等分支——两侧均为数组 JSON 且去"上次修改"后逐字段一致
+     * (monVarsDiff, 顺序无关) 也判定已应用停发; 仅时间戳章不同的 config 假在途同此修复 */
+    $mEqEdit = $editOut !== '' && !$editStopped ? monVarsMirrorEq(isset($row['edit_var_dev']) ? $row['edit_var_dev'] : '', $editOut) : 0;
+    $mEqCfg = $cfgOut !== '' && !$cfgStopped ? monVarsMirrorEq(isset($row['config_var_dev']) ? $row['config_var_dev'] : '', $cfgOut) : 0;
+    if ($mEqEdit > 0) {
+        $editOut = '';
+        $editStopped = true;
+        $editMirrorStopped = true;
+        $editMirrorSem = ($mEqEdit === 2);
+    }
+    if ($mEqCfg > 0) {
+        $cfgOut = '';
+        $cfgStopped = true;
+        $cfgMirrorStopped = true;
+        $cfgMirrorSem = ($mEqCfg === 2);
+    }
     if ($editStopped || $cfgStopped) {
         /* 去噪: 心跳每轮都会例行确认已应用内容, 同一 ack 锚点只记首次审计,
          * 设备应用了新下发 (ack 变化) 才记新条目, 避免每 2 分钟刷一条重复确认 */
@@ -2586,8 +2801,37 @@ function handleMonitorVars($body) {
         $lastAck = json_decode(strval(@file_get_contents($ackFile)), true);
         $curAck = array('edit' => $editAck, 'cfg' => $cfgAck);
         if ($lastAck !== $curAck) {
-            auditLog('下发确认', array('device' => maskId($uuid), 'by' => '设备', 'edit' => $editStopped ? 1 : 0, 'config' => $cfgStopped ? 1 : 0));
+            if ($editMirrorStopped || $cfgMirrorStopped) {
+                auditLog('下发确认', array('device' => maskId($uuid), 'by' => '系统', 'edit' => $editMirrorStopped ? 1 : 0,
+                    'config' => $cfgMirrorStopped ? 1 : 0,
+                    'reason' => ($editMirrorSem || $cfgMirrorSem)
+                        ? '设备回传 ack 缺失/未更新, 但上报镜像与基线语义一致 (仅时间戳/格式差异), 判定已应用停发'
+                        : '设备回传 ack 缺失/未更新, 但上报镜像已与基线一致, 判定已应用停发'));
+            } else {
+                auditLog('下发确认', array('device' => maskId($uuid), 'by' => '设备', 'edit' => $editStopped ? 1 : 0, 'config' => $cfgStopped ? 1 : 0));
+            }
             @file_put_contents($ackFile, json_encode($curAck), LOCK_EX);
+        }
+    }
+    if ($editOut !== '' || $cfgOut !== '') {
+        /* 下发内容审计 (26-10-18): 服务端本次响应实际携带下发 (edit/config 非空) 时记录,
+         * 与"变量修改/配置变量修改/漂移重发"(触发来源) 和"下发确认"(设备应用) 串成完整链路,
+         * 无对应操作来源的"下发内容"即异常下发。去噪同 ack 机制: 同一内容每 30s 心跳重复
+         * 下发只记首次, 新保存/漂移重发产生新时间戳 → 锚点变化 → 记新条目;
+         * 锚点存 时间戳:SHA256 派生值而非原文, 防锚点文件随 64KB 内容膨胀 */
+        $sentFile = $LOG_DIR . '/sent_' . md5($uuid) . '.json';
+        $lastSent = json_decode(strval(@file_get_contents($sentFile)), true);
+        $curSent = array(
+            'edit' => $editOut === '' ? '' : monStampOf($editOut) . ':' . hash('sha256', $editOut),
+            'cfg'  => $cfgOut === '' ? '' : monStampOf($cfgOut) . ':' . hash('sha256', $cfgOut),
+        );
+        if ($lastSent !== $curSent) {
+            auditLog('下发内容', array('device' => maskId($uuid), 'by' => '系统',
+                'editLen' => strlen($editOut), 'cfgLen' => strlen($cfgOut),
+                'editStamp' => monStampOf($editOut), 'cfgStamp' => monStampOf($cfgOut),
+                'editContent' => $editOut === '' ? '' : utf8Truncate($editOut, 2000),
+                'cfgContent' => $cfgOut === '' ? '' : utf8Truncate($cfgOut, 2000)));
+            @file_put_contents($sentFile, json_encode($curSent), LOCK_EX);
         }
     }
     respond(array(
@@ -2600,6 +2844,9 @@ function handleMonitorVars($body) {
         'devConfig' => strval(isset($row['config_var_dev']) ? $row['config_var_dev'] : ''),
         'config' => $cfgOut,
         'configStopped' => $cfgStopped,
+        /* 备用项草稿 (仅网页编辑回显): 条目含 backup1/backup2 字段的数组 JSON */
+        'editBackup' => strval(isset($row['edit_backup']) ? $row['edit_backup'] : ''),
+        'configBackup' => strval(isset($row['config_backup']) ? $row['config_backup'] : ''),
         'updatedMs' => intval($row ? $row['updated_ms'] : 0),
     ));
 }
@@ -2624,6 +2871,43 @@ function monEnsureStamp($content) {
     return json_encode($arr, JSON_UNESCAPED_UNICODE);
 }
 
+/* 配置漂移自愈 (26-10-18): uploadCfg=0 时设备镜像与基线语义不同 (monVarsDiff 过滤"上次修改"
+ * 仍不一致) 且距上次自动重发超过 MON_DRIFT_RESEND_SEC — 在途下发的正常应用窗口仅 30-60s
+ * (心跳 30s + 应用), 超时未收敛说明设备本地数组被回滚/脚本改写而 applied 锚点仍匹配基线
+ * (闭环停发只看 ack 文件, 服务端无感, 设备将一直跑旧值; 此前需人工"空保存"刷新时间戳救火)。
+ * 自动重打基线"上次修改"让设备下轮 vars 重新拉取应用, 限频防拉锯 (设备端脚本每轮重写时
+ * 最多半小时一轮)。仅 config 通道 (edit 计数被脚本运行时重写是常态, 不做漂移判定)。
+ * 返回 true=已触发重发 */
+function monDriftResend($uuid, $devContent) {
+    global $CFG;
+    $dev = strval($devContent);
+    if (trim($dev) === '') return false;
+    $st = dbAcc()->prepare("SELECT config_var, resend_ms FROM monitor_vars WHERE uuid = ?");
+    if (!$st) return false;
+    $st->bind_param('s', $uuid);
+    $st->execute();
+    $row = $st->get_result()->fetch_assoc();
+    $st->close();
+    if (!$row) return false;
+    $base = strval(isset($row['config_var']) ? $row['config_var'] : '');
+    if (trim($base) === '') return false;                      /* 空基线无内容可重发 */
+    if (monVarsDiff($base, $dev) === '') return false;         /* 语义一致 (仅时间戳差异): 非漂移 */
+    $now = nowMs();
+    $last = intval(isset($row['resend_ms']) ? $row['resend_ms'] : 0);
+    if ($last > 0 && $now - $last < $CFG['MON_DRIFT_RESEND_SEC'] * 1000) return false;   /* 限频窗口内 */
+    $restamped = monEnsureStamp($base);                        /* 重打"上次修改"=当前时间 */
+    $stU = dbAcc()->prepare("UPDATE monitor_vars SET config_var = ?, resend_ms = ? WHERE uuid = ?");
+    if (!$stU) return false;
+    $stU->bind_param('sis', $restamped, $now, $uuid);
+    $stU->execute();
+    $stU->close();
+    auditLog('漂移重发', array('device' => maskId($uuid), 'by' => '系统',
+        'devStamp' => monStampOf($dev), 'baseStamp' => monStampOf($base),
+        'diff' => monVarsDiff($base, $dev),
+        'reason' => '设备上报配置与基线语义不同且超时未收敛, 自动刷新基线时间戳触发重新下发'));
+    return true;
+}
+
 function handleMonitorSetVars($body) {
     if (!rateLimit(clientIp(), 30)) respond(array('success' => false, 'message' => '请求过于频繁'));
     $uuid = monVarsAuth($body, true);
@@ -2643,9 +2927,9 @@ function handleMonitorSetVars($body) {
         if (strlen($edit) > 65536) respond(array('success' => false, 'message' => '内容超过 64KB 限制'), 400);
         $edit = monEnsureStamp($edit);   /* 数组无"上次修改"则兜底补, 防闭环死锁 */
         if (strlen($edit) > 65536) respond(array('success' => false, 'message' => '内容超过 64KB 限制'), 400);
-        $st = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, updated_ms) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE edit_var = VALUES(edit_var), updated_ms = VALUES(updated_ms)");
+        $st = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE edit_var = VALUES(edit_var), updated_ms = VALUES(updated_ms)");
         if (!$st) respond(array('success' => false, 'message' => '保存失败'), 500);
-        $st->bind_param('ssssssi', $uuid, $empty, $empty, $edit, $empty, $empty, $now);
+        $st->bind_param('ssssssssi', $uuid, $empty, $empty, $edit, $empty, $empty, $empty, $empty, $now);
         $st->execute();
         $st->close();
         auditLog('变量修改', array('device' => maskId($uuid), 'by' => monActorLabel($body), 'len' => strlen($edit),
@@ -2661,15 +2945,39 @@ function handleMonitorSetVars($body) {
         if (strlen($cfg) > 65536) respond(array('success' => false, 'message' => '内容超过 64KB 限制'), 400);
         $cfg = monEnsureStamp($cfg);   /* 数组无"上次修改"则兜底补, 防闭环死锁 */
         if (strlen($cfg) > 65536) respond(array('success' => false, 'message' => '内容超过 64KB 限制'), 400);
-        $st = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, updated_ms) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE config_var = VALUES(config_var), updated_ms = VALUES(updated_ms)");
+        /* 人工保存视为人工介入: 清零 resend_ms, 让后续漂移自愈从新保存时刻重新计时 */
+        $st = dbAcc()->prepare("INSERT INTO monitor_vars (uuid, view_var, edit_var_dev, edit_var, config_var_dev, config_var, edit_backup, config_backup, updated_ms) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE config_var = VALUES(config_var), updated_ms = VALUES(updated_ms), resend_ms = 0");
         if (!$st) respond(array('success' => false, 'message' => '保存失败'), 500);
-        $st->bind_param('ssssssi', $uuid, $empty, $empty, $empty, $empty, $cfg, $now);
+        $st->bind_param('ssssssssi', $uuid, $empty, $empty, $empty, $empty, $cfg, $empty, $empty, $now);
         $st->execute();
         $st->close();
         auditLog('配置变量修改', array('device' => maskId($uuid), 'by' => monActorLabel($body), 'len' => strlen($cfg),
             'diff' => monVarsDiff(isset($row['config_var']) ? $row['config_var'] : '', $cfg),
             'content' => monVarsDigest($cfg)));
         $respCfg = $cfg;
+    }
+    /* 备用项草稿 (26-10-03): editBackup/configBackup 为条目含 backup1/backup2 字段的数组 JSON,
+     * 仅存库供网页编辑回显, 与下发内容隔离; 请求携带才更新 (只改主值时不清空已有备用);
+     * 主保存已确保行存在, 此处仅 UPDATE; 仅备用变化不触发设备闭环 */
+    if ($hasEdit && isset($body['editBackup']) && is_string($body['editBackup'])) {
+        $bak = strval($body['editBackup']);
+        if (strlen($bak) > 65536) respond(array('success' => false, 'message' => '备用内容超过 64KB 限制'), 400);
+        $stB = dbAcc()->prepare("UPDATE monitor_vars SET edit_backup = ? WHERE uuid = ?");
+        if ($stB) {
+            $stB->bind_param('ss', $bak, $uuid);
+            $stB->execute();
+            $stB->close();
+        }
+    }
+    if ($hasCfg && isset($body['configBackup']) && is_string($body['configBackup'])) {
+        $bak = strval($body['configBackup']);
+        if (strlen($bak) > 65536) respond(array('success' => false, 'message' => '备用内容超过 64KB 限制'), 400);
+        $stB = dbAcc()->prepare("UPDATE monitor_vars SET config_backup = ? WHERE uuid = ?");
+        if ($stB) {
+            $stB->bind_param('ss', $bak, $uuid);
+            $stB->execute();
+            $stB->close();
+        }
     }
     respond(array('success' => true, 'uuid' => $uuid, 'edit' => $respEdit, 'config' => $respCfg));
 }

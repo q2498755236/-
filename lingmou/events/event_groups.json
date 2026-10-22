@@ -1,0 +1,24 @@
+{
+  "groups": [
+    {
+      "name": "system",
+      "priority": 1000,
+      "description": "系统异常事件"
+    },
+    {
+      "name": "common",
+      "priority": 200,
+      "description": "通用事件"
+    },
+    {
+      "name": "scene",
+      "priority": 500,
+      "description": "界面事件"
+    },
+    {
+      "name": "default",
+      "priority": 100,
+      "description": "默认界面事件"
+    }
+  ]
+}

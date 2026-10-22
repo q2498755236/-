@@ -1,0 +1,10 @@
+{
+  "name": "灵眸v4.2",
+  "main": "main.js",
+  "versionName": "4.2.0-rc13",
+  "versionCode": 423,
+  "packageName": "com.lingmou.v42",
+  "launchConfig": {
+    "hideLogs": false
+  }
+}
