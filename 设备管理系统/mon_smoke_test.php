@@ -40,6 +40,16 @@ function post($path, $data) {
     $raw = file_get_contents($BASE . $path, false, $ctx);
     return json_decode(strval($raw), true);
 }
+function get($path) {
+    global $BASE;
+    $ctx = stream_context_create(array('http' => array(
+        'method' => 'GET',
+        'ignore_errors' => true,
+        'timeout' => 10,
+    )));
+    $raw = file_get_contents($BASE . $path, false, $ctx);
+    return json_decode(strval($raw), true);
+}
 function devAuth($deviceId, $uuid) {
     global $SEED;
     $ts = time();
@@ -258,6 +268,36 @@ $st11->close();
 $tdb->close();
 $r = post('/api/monitor/vars', devAuth($DEV, $UUID));
 check('T11 语义差异仍下发', empty($r['configStopped']) && strval($r['config']) !== '');
+
+/* ---- T12: 缩略图停滞自查 /api/monitor/healthcheck ---- */
+$base12 = count(file($LOG, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: array());
+$thumbDir = '/workspace/设备管理系统/mon_thumbs';
+if (!is_dir($thumbDir)) @mkdir($thumbDir, 0755, true);
+$tf = $thumbDir . '/' . $UUID . '.webp';
+file_put_contents($tf, 'x');                            /* 先造一张"无限新"的图 (当前时间) */
+$r = get('/api/monitor/healthcheck?key=' . $KEY . '&stale=1800');
+check('T12 自查返回成功', !empty($r['success']));
+check('T12 新图不告警', is_array($r['ok']) && count($r['stale']) === 0);
+/* 把图 mtime 拨回 2 小时前 => 应判停滞并写审计 */
+@touch($tf, time() - 7200);
+$r = get('/api/monitor/healthcheck?key=' . $KEY . '&stale=1800');
+check('T12 过旧图判停滞', count($r['stale']) === 1 && $r['stale'][0]['age_sec'] >= 7000);
+$l12 = auditLines($base12);
+check('T12 写入缩略图告警审计', countType($l12, '缩略图告警') === 1);
+/* 同小时重复自查 => 去重不重复写审计 */
+$r = get('/api/monitor/healthcheck?key=' . $KEY . '&stale=1800');
+check('T12 同小时去重', countType(auditLines($base12), '缩略图告警') === 1);
+/* quiet=1 不写审计 */
+@unlink('/workspace/carddata/state/thumb_health_dedup.json');
+$r = get('/api/monitor/healthcheck?key=' . $KEY . '&stale=1800&quiet=1');
+check('T12 quiet 不写审计', countType(auditLines($base12), '缩略图告警') === 1 && count($r['stale']) === 1);
+/* 无图设备 => 判停滞 (age_sec=-1) */
+@unlink($tf);
+$r = get('/api/monitor/healthcheck?key=' . $KEY . '&stale=1800&quiet=1');
+check('T12 无图判停滞', count($r['stale']) === 1 && $r['stale'][0]['age_sec'] === -1);
+/* 密钥错误 => 401 */
+$r = get('/api/monitor/healthcheck?key=WRONGKEY');
+check('T12 密钥校验', empty($r['success']));
 
 /* ---- 汇总: 打印新审计行 ---- */
 echo "\n---- 新增审计行 ----\n";

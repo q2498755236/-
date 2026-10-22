@@ -1924,6 +1924,78 @@ function monThumbMtime($uuid) {
     return is_file($f) ? intval(filemtime($f)) : 0;
 }
 
+/* 缩略图停滞自查 (26-10-22): 主机 WAF 拦截 multipart 曾导致三台设备静默停更 22 小时无人察觉,
+ * 加每日 cron 自查。在线设备 thumb_mtime 距今超阈值 (默认 1800s, 可 &stale=N 覆盖) 即判定停滞,
+ * 含从未上传 (thumb_mtime=0); 审计按 设备+小时 去重, 防同类告警刷屏。
+ * 调用: GET /api/monitor/healthcheck?key=... [&stale=秒] [&quiet=1 不写审计只返回] */
+function handleMonitorHealthcheck($query) {
+    $cip = clientIp();
+    if (adminFailCheck($cip)) respond(array('success' => false, 'message' => '失败次数过多, IP 已被暂时封禁'), 429);
+    if (!monitorAuth(isset($query['key']) ? $query['key'] : '')) {
+        adminFail($cip);
+        respond(array('success' => false, 'message' => '密钥错误'), 401);
+    }
+    adminFailClear($cip);
+    $stale = intval(isset($query['stale']) ? $query['stale'] : 1800);
+    if ($stale < 300) $stale = 300;             /* 下限 5 分钟, 防误报 */
+    if ($stale > 86400) $stale = 86400;
+    $quiet = strval(isset($query['quiet']) ? $query['quiet'] : '') === '1';
+    $now = nowSec();
+    $res = db()->query("SELECT uuid, last_seen, mon_ver, foreground_pkg FROM client_status ORDER BY last_seen DESC LIMIT 200");
+    $online = 0; $staleList = array(); $okList = array();
+    while ($row = $res->fetch_assoc()) {
+        $isOnline = (nowMs() - intval($row['last_seen'])) < MONITOR_ONLINE_MS;
+        if (!$isOnline) continue;              /* 离线设备不判缩略图 (本就该停) */
+        $online++;
+        $mtime = monThumbMtime($row['uuid']);
+        $age = $mtime > 0 ? max(0, $now - $mtime) : -1;
+        $item = array(
+            'uuid'   => maskId($row['uuid']),
+            'age_sec'=> $age,
+            'mon_ver'=> strval($row['mon_ver']),
+            'fg'     => strval($row['foreground_pkg']),
+        );
+        if ($mtime === 0 || $age > $stale) $staleList[] = $item;
+        else $okList[] = $item;
+    }
+    /* 审计去重: 同一设备同一小时只记一条告警 */
+    if (!$quiet && count($staleList) > 0) {
+        $dedup = loadState('thumb_health_dedup', null);
+        if (!is_array($dedup)) $dedup = array();
+        $hourKey = date('YmdH');
+        $newOnes = array();
+        foreach ($staleList as $it) {
+            $k = $it['uuid'] . '_' . $hourKey;
+            if (!isset($dedup[$k])) { $dedup[$k] = 1; $newOnes[] = $it; }
+        }
+        /* 只保留当小时去重键, 防无限膨胀 */
+        $kept = array();
+        foreach ($dedup as $k => $vv) if (strpos($k, '_' . $hourKey) !== false) $kept[$k] = $vv;
+        saveState('thumb_health_dedup', $kept);
+        if (count($newOnes) > 0) {
+            $msgs = array();
+            foreach ($newOnes as $it) {
+                $msgs[] = $it['uuid'] . '(' . ($it['age_sec'] < 0 ? '无图' : '停滞' . intval($it['age_sec'] / 60) . '分钟') . ', 客户端' . $it['mon_ver'] . ')';
+            }
+            auditLog('缩略图告警', array(
+                'device' => count($newOnes) === 1 ? $newOnes[0]['uuid'] : (count($newOnes) . ' 台'),
+                'by' => '系统',
+                'staleSec' => $stale,
+                'detail' => implode('; ', $msgs),
+                'reason' => '缩略图长时间未更新, 排查设备端插件版本/截图权限/上传链路',
+            ));
+        }
+    }
+    respond(array(
+        'success'   => true,
+        'online'    => $online,
+        'staleSec'  => $stale,
+        'stale'     => $staleList,
+        'ok'        => $okList,
+        'serverTime'=> $now,
+    ));
+}
+
 /* ============ 客户账号体系 ============ */
 /* 规范用户名: 3-24位, 字母数字下划线 */
 function monNormUser($u) {
@@ -3089,7 +3161,7 @@ if ($method === 'POST' && ($path === '/api/verify' || $path === '/api/heartbeat'
 }
 
 /* ---- 监控接口 ---- */
-if ($path === '/api/monitor/report' || $path === '/api/monitor/list' || $path === '/api/monitor/setstatus' || $path === '/api/monitor/thumb' || $path === '/api/monitor/devicedel' || $path === '/api/monitor/vars' || $path === '/api/monitor/setvars' || $path === '/api/monitor/clearcounts' || $path === '/api/monitor/audit') {
+if ($path === '/api/monitor/report' || $path === '/api/monitor/list' || $path === '/api/monitor/setstatus' || $path === '/api/monitor/thumb' || $path === '/api/monitor/devicedel' || $path === '/api/monitor/vars' || $path === '/api/monitor/setvars' || $path === '/api/monitor/clearcounts' || $path === '/api/monitor/audit' || $path === '/api/monitor/healthcheck') {
     if ($method === 'POST' && $path === '/api/monitor/report') handleMonitorReport($body);
     if ($method === 'GET' && $path === '/api/monitor/list') handleMonitorList($query);
     if ($method === 'GET' && $path === '/api/monitor/audit') handleMonitorAudit($query);
@@ -3100,6 +3172,7 @@ if ($path === '/api/monitor/report' || $path === '/api/monitor/list' || $path ==
     if ($method === 'POST' && $path === '/api/monitor/vars') handleMonitorVars($body);
     if ($method === 'POST' && $path === '/api/monitor/setvars') handleMonitorSetVars($body);
     if ($method === 'POST' && $path === '/api/monitor/clearcounts') handleMonitorClearCounts($body);
+    if ($method === 'GET' && $path === '/api/monitor/healthcheck') handleMonitorHealthcheck($query);
 }
 
 /* ---- 客户账号接口 ---- */
