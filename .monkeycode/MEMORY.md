@@ -264,3 +264,14 @@ Entries discovered by the Agent during task execution should follow this format:
 - Context: 用户要求删除客户状态标记的 10 小时自动过期重置
 - Instructions:
   - 客户在状态页标记的 挂机/离线 状态必须持久保留, 由客户手动改回, 服务端不得自动过期清空 (66f873a 已删 monMarkStatus, report/list/binds 三处直读 status 列, status.html 提示文案同步改); status_ms 列仅作标记时间记录, 不再参与过期判定
+
+[Project Knowledge Summary]
+- Date: 2026-10-22
+- Context: 镜像兜底语义分支上线 (4a941d7) 与线上验证
+- Category: Troubleshooting & Debugging | Build Methods
+- Instructions:
+  - 镜像兜底已升级双分支 (monVarsMirrorEq): 1=字面相等 / 2=语义相等 (两侧均为数组 JSON 且去"上次修改"章后逐字段一致, monVarsDiff 顺序无关); 设备镜像 pretty JSON+缺章与紧凑基线字面永不相等, edit 通道必须有语义分支才能停发
+  - 线上验证: 7F4A edit+config 双通道语义停发触发 (审计 reason"仅时间戳/格式差异"), 55s 后设备端 ack 回传闭环; 92B4 config 走字面分支; EAD4 edit 真实差异 (赠礼计数) 照常下发不受影响
+  - 审计"下发确认"by=系统 时 edit/config 值仅表示该通道是否被镜像兜底停发, 值为 0 可能是正常 ack 闭环或本就无在途, 判读勿混淆
+  - 测试注意: 同一设备连续两次停发的"下发确认"会被 ack 去噪吞掉 (curAck 不变), T10 审计断言前需先带陈旧 ack 请求一次制造 ack 变化
+  - 客户状态标记 (挂机/离线) 永久保留由客户手动改回 (66f873a 已删 10 小时自动过期 monMarkStatus)
