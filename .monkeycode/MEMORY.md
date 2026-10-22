@@ -258,3 +258,9 @@ Entries discovered by the Agent during task execution should follow this format:
   - 回归测试: 设备管理系统/mon_smoke_test.php, 服务器起后直接 `php mon_smoke_test.php`, TOTP+HMAC 签名已内置
   - 测试设备 UUID 必须纯 hex+连字符: 服务端 preg_replace('/[^0-9A-Fa-f\-]/') 清洗, 含 T/S 等字母的 "TEST-xxx" 会被截断成查不到的 uuid
   - monEnsureStamp 时间戳秒级精度, 断言时间戳变化需 sleep(1) 隔开
+
+[User Instruction Summary]
+- Date: 2026-10-22
+- Context: 用户要求删除客户状态标记的 10 小时自动过期重置
+- Instructions:
+  - 客户在状态页标记的 挂机/离线 状态必须持久保留, 由客户手动改回, 服务端不得自动过期清空 (66f873a 已删 monMarkStatus, report/list/binds 三处直读 status 列, status.html 提示文案同步改); status_ms 列仅作标记时间记录, 不再参与过期判定
