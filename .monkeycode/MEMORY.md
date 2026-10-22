@@ -275,3 +275,13 @@ Entries discovered by the Agent during task execution should follow this format:
   - 审计"下发确认"by=系统 时 edit/config 值仅表示该通道是否被镜像兜底停发, 值为 0 可能是正常 ack 闭环或本就无在途, 判读勿混淆
   - 测试注意: 同一设备连续两次停发的"下发确认"会被 ack 去噪吞掉 (curAck 不变), T10 审计断言前需先带陈旧 ack 请求一次制造 ack 变化
   - 客户状态标记 (挂机/离线) 永久保留由客户手动改回 (66f873a 已删 10 小时自动过期 monMarkStatus)
+
+[Project Knowledge Summary]
+- Date: 2026-10-22
+- Context: 设备端锚点1语义校验修复 (f767abe) 与 main 合并
+- Category: Workflow & Collaboration | Troubleshooting & Debugging
+- Instructions:
+  - main 已与 feature 分支同步 (523648b): 含设备管理系统全套修复 + lingmou/灵眸 逆向成果 + maa 资源; 后续在 feature 分支开发, 阶段性合并回 main
+  - 设备端 arrApplyServerEdit 双锚点现已要求"章相同 且 arrSemanticEq(本地,下发)"才跳过, 本地被业务脚本改写/损坏时重新应用基线 (f767abe); 设备端生效需重新加载 monitor.js 插件
+  - 设备端 JS 决策流测试: 设备管理系统/monitor_apply_test.js, `node monitor_apply_test.js` (mock auto/monRead/monWrite 内存环境, 从 monitor.js 源码切函数 eval, 8 场景 9 断言); 改 arrApplyServerEdit/arrSemanticEq 后必跑
+  - JS 语义比较用 for-in (Rhino 兼容), 代码库既有风格也是 for-in
