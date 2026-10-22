@@ -297,3 +297,16 @@ Entries discovered by the Agent during task execution should follow this format:
   - 诊断信号对照: report JSON 200 + thumb multipart 403 = WAF; report 和 thumb 都 400/401 = 签名; 都 500 = PHP/存储
   - 线上 mon_thumbs 文件 mtime 与 list 的 thumb_mtime 一致可判断"最后成功落盘时刻"; screen_state.static_sec 只表示服务端最后比对时刻距今, 不等于最后上传时刻
   - 设备端 mock 测试: 设备管理系统/monitor_thumb_test.js (9 断言: threads/URL/img 去空白/签名齐备/无 files/结果变量/删临时文件/画面状态/base64 过短放弃)
+
+[Project Knowledge Summary]
+- Date: 2026-10-22
+- Context: WAF 拦截规则边界实测 (决定性实验)
+- Category: Environment Configuration | Troubleshooting & Debugging
+- Instructions:
+  - **WAF 判定依据是 Content-Type 头, 不是请求体**: Content-Type 以 multipart/ 开头 (大小写不敏感, 不论有无 boundary/有无 file 字段/体积/URL/UA/HTTP还是HTTPS) 一律被 openresty 403 拒绝, PHP 完全不执行 (403 响应头无 PHP 特征, 只有 Server: openresty + 最小头)
+  - 反证: 请求体是 multipart 内容但 Content-Type 写 text/plain / application/json / x-www-form-urlencoded => 200 正常通过; 说明只查头
+  - 无效绕过尝试: X-Requested-With / Origin+Referer 同域 / Accept: json / Expect: 100-continue / Transfer-Encoding: chunked / X-Forwarded-For / multipart/mixed / multipart/related / 换 UA (Googlebot/Android/curl/空) 全部仍 403
+  - 因 PHP 仅在 Content-Type 为 multipart/form-data 时解析 $_FILES, "假头+真体" 方案对服务端无用, 只能改 JSON+base64 (c519bbc 已实施)
+  - 线上 post_max_size >= 9MB (2100/4000/9000KB JSON 均能到 PHP 返 "图像数据无效"), 服务端自身限制是 handleMonitorThumb 的 strlen(img) <= 2000000
+  - 服务端图像链路健壮性已验证: 合法 PNG 200 / 伪造 SOI-EOI 噪声 JPEG 200 (走原始字节直存) / 头对但内容坏 200, 判失败只靠 200 vs 400/500
+  - 探测脚本用完必须清理线上 mon_thumbs/{uuid}.webp|jpg (服务端 UUID 清洗会去掉字母如 TST, 文件名形如 0-XXXXXXXX)
