@@ -170,7 +170,7 @@ var MON_UA = 'Googlebot/2.1 (+http://www.google.com/bot.html)';
 var MON_INTERVAL_SEC = 30;
 
 /* ---------- 缩略图配置 (速度优先, 能看就行) ----------
- * 独立生效, 与 MON_USE_SHELL 无关; 任一步失败静默放弃本张 */
+ * 1.2.3 起 base64 读取依赖 shell (MON_USE_SHELL); 任一步失败静默放弃本张 */
 var MON_USE_THUMB = true;            /* 缩略图总开关 */
 var MON_THUMB_INTERVAL_SEC = 120;    /* 上传节流 (与心跳独立) */
 var MON_THUMB_WIDTH = 480;           /* 缩略图宽度像素 (PC 灯箱放大可看清, 体积约 80-150KB) */
@@ -188,7 +188,7 @@ var MON_USE_SHELL = true;    /* 电量/内存 (auto.shell) */
 var MON_USE_SCREEN = true;   /* 屏幕开关 (auto.isScreenOn) */
 var MON_USE_PKG = true;      /* 前台应用 (Shell优先四级降级, 见 monPostReport) */
 var MON_USE_VER = true;      /* 编辑器版本 (auto.clientVersion) */
-var MON_VERSION = '1.2.2';   /* 插件版本号, 随心跳上报 (payload.ver), 网页设备卡"客户端"行显示 */
+var MON_VERSION = '1.2.3';   /* 插件版本号, 随心跳上报 (payload.ver), 网页设备卡"客户端"行显示 */
 
 /* ---------- 持久化路径与兜底变量名 ---------- */
 var MON_DIR = '/sdcard/.mon_monitor';
@@ -1009,7 +1009,8 @@ function monFetchVars() {
  * opencv 封装签名文档未给出, resize/imwrite 均做多形态兼容尝试;
  * 任一步失败返回空串放弃本张, 不影响心跳
  * 资源回收: Mat 是 native 内存 (全屏可达数 MB), release 后才真正归还;
- * 临时文件上传后立即删除; MON_USE_SHELL 关闭时整链跳过 (依赖 shell base64) */
+ * 临时文件上传后立即删除; 1.2.3 起上传走 JSON+base64, 依赖 shell 读 base64
+ * (MON_USE_SHELL 关闭时整链跳过) */
 function monMatRelease(m) {
     /* 编辑器 cv 文档: mat.delete() 释放原生内存, 防崩溃的关键 */
     if (!m) return;
@@ -1214,10 +1215,9 @@ function monMakeThumbFile() {
 }
 
 function monThumbUpload() {
-    /* http.upload multipart 直传文件, 省掉 shell base64 (体积小 33%, 不依赖 shell)
-     * 异步回调式: 只同步截屏+节流, 上传不阻塞心跳主线程 (1.2.0 缩略图先行在慢主机上
-     * 多个同步 http 串联会把单周期拖长, 缩略图-心跳间隔曾达 51s 且随后设备崩溃;
-     * 异步后心跳/变量/状态正常落盘, 上传结果由回调处理) */
+    /* 1.2.3 起改 JSON+base64 img 链路 (原 http.upload multipart 被 byethost openresty
+     * WAF 一律 403, 见下方详细注释); 上传放子线程, 不阻塞心跳主线程 (1.2.0 曾是同步
+     * 串联导致单周期拖长 51s 并崩溃, 故必须异步化) */
     var nowSec = Math.floor(Date.now() / 1000);
     var ident = monEnsureIdentity();
     var f = monMakeThumbFile();
@@ -1236,30 +1236,48 @@ function monThumbUpload() {
         totp: totp,
         sign: sign
     };
-    var files = {};
-    var baseName = f.indexOf('/t.png') >= 0 ? 't.png' : 't.jpg';
-    files[baseName] = f;
-    try { http.addHeader('User-Agent', MON_UA); } catch (e3) {}
-    /* 回调式异步: 传入 callback 时 http.upload 不阻塞; 结果/日志/删临时文件都放回调,
-     * 临时文件必须在回调里删 (上传完成后才可删, 提前删会导致上传读不到文件) */
-    var cleanup = function () { try { auto.shell('rm -f ' + f); } catch (eF) {} };
-    try {
-        http.upload(MON_SERVER + '/api/monitor/thumb', data, files, function (res) {
+    /* 26-10-22: byethost 的 openresty WAF 拦截 multipart 文件上传 (http.upload 一律
+     * 403 Forbidden, 仅 JSON 放行), 三台设备缩略图同日停更即此因; 改走服务端
+     * handleMonitorThumb 的 base64 img 兜底链路 (multipart 优先, img 兼容, 已线上验证
+     * JSON+base64 200 正常落盘), 体积 +33%, 480 宽 JPEG 仅 20-40KB 可接受;
+     * base64 用 shell 读取 (busybox base64 每 76 列自动换行, 服务端 preg_replace 去空白) */
+    if (!MON_USE_SHELL) {
+        try { auto.shell('rm -f ' + f); } catch (eS0) {}
+        slog('缩略图: MON_USE_SHELL 关闭, base64 链路不可用, 放弃本张');
+        return '';
+    }
+    var imgB64 = '';
+    try { imgB64 = String(auto.shell('base64 ' + f)); } catch (e64) { imgB64 = ''; }
+    try { auto.shell('rm -f ' + f); } catch (eF) {}
+    imgB64 = imgB64.replace(/[\r\n\s]/g, '');
+    if (imgB64.length < 100) {
+        slog('缩略图: base64 读取失败, 放弃本张');
+        return '';
+    }
+    data.img = imgB64;
+    /* 上传体 (20-55KB) 同步 postJson 会阻塞主线程数秒, 优先放子线程; threads 不可用
+     * 时退化同步 (心跳周期 30s, 单次阻塞 1-3s 可接受) */
+    var send = function () {
+        try {
+            var res = http.postJson(MON_SERVER + '/api/monitor/thumb', data);
             var body = typeof res === 'string' ? res : (res && res.body) || '';
             var ok = String(body).indexOf('"success":true') >= 0;
             var skipped = ok && String(body).indexOf('"skipped":true') >= 0;
-            sv('监控缩略图结果', ok ? (skipped ? 'ok (服务端限频跳过)' : 'ok') : (body ? String(body).slice(0, 120) : '截图或编码失败'));
-            slog('缩略图: ' + (ok ? (skipped ? '服务端限频内跳过 (图未更新)' : '成功') : (body ? '失败 ' + String(body).slice(0, 60) : '截图或编码失败')));
+            sv('监控缩略图结果', ok ? (skipped ? 'ok (服务端限频跳过)' : 'ok') : (body ? String(body).slice(0, 120) : '上传无响应'));
+            slog('缩略图: ' + (ok ? (skipped ? '服务端限频内跳过 (图未更新)' : '成功') : (body ? '失败 ' + String(body).slice(0, 60) : '上传无响应')));
             /* 缩略图响应携带最新画面状态 (对比刚完成, 结果最及时); 心跳响应会兜底再刷一次 */
             if (ok && !skipped) { try { monApplyScreen(JSON.parse(String(body))); } catch (eS) {} }
-            cleanup();
-        });
-    } catch (e) {
-        slog('缩略图[异步上传]异常: ' + (e && e.message ? e.message : e));
-        cleanup();
-        return '';
+        } catch (e) {
+            slog('缩略图[JSON上传]异常: ' + (e && e.message ? e.message : e));
+        }
+    };
+    try {
+        if (typeof threads !== 'undefined' && threads && typeof threads.start === 'function') threads.start(send);
+        else send();
+    } catch (eT) {
+        try { send(); } catch (eT2) {}
     }
-    return '';   /* 异步: 立即返回, 结果由回调处理 */
+    return '';   /* 子线程/同步发送后立即返回 */
 }
 
 /* 服务端画面状态下发 (缩略图 dHash 对比 + 黑屏检测) 写入输出变量 '画面状态'
